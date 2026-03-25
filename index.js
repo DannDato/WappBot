@@ -6,10 +6,18 @@ const { handleMessage } = require('./handlers/messageHandler')
 const { saveLearning } = require('./services/learning')
 const { getLastUserMessage, getContext, saveMessage } = require('./services/memory')
 const { handleCommand } = require('./services/commands')
-const { markHumanActive } = require('./services/conversationState')
+const { markHumanActive, isHumanActive, releaseHuman } = require('./services/conversationState')
 const { startScheduler } = require('./services/scheduler')
 const { isBotMessage, addBotMessage } = require('./services/botMessages')
-const { hasPendingQuestions, getOldestPendingQuestion, removePendingQuestion } = require('./services/escalation')
+const {
+  hasPendingQuestions,
+  getPendingQuestionByMessageId,
+  getOldestPendingQuestion,
+  getPendingQuestionById,
+  getPendingCount,
+  listPendingQuestions,
+  removePendingQuestion
+} = require('./services/escalation')
 const { generateReplyFromHint } = require('./services/openai')
 
 const os = require('os')
@@ -21,6 +29,60 @@ function isTransientContextError(error) {
 }
 
 let isReinitializing = false
+const unreadCountCache = new Map()
+const UNREAD_POLL_INTERVAL_MS = 8000
+
+function extractEscalationId(text = '') {
+  const match = String(text).match(/#([A-Z0-9]{6,})|\[ID:([A-Z0-9]{6,})\]/i)
+  if (!match) return null
+  return (match[1] || match[2] || '').toUpperCase()
+}
+
+async function processUnreadSignal(chat, source = 'event') {
+  const chatId = chat?.id?._serialized
+  if (!chatId) return
+  if (chatId === 'status@broadcast') return
+  if (chatId.includes('@g.us')) return
+
+  const currentUnread = Number(chat?.unreadCount ?? 0)
+  const previousUnread = unreadCountCache.has(chatId) ? unreadCountCache.get(chatId) : null
+  unreadCountCache.set(chatId, currentUnread)
+
+  // Solo tomar como "marcado manual no leido" (badge sin contador)
+  // cuando el contador queda negativo, NO cuando sube por mensajes nuevos.
+  const isManualMarkedUnread = currentUnread < 0 && (previousUnread === null || previousUnread >= 0)
+  if (!isManualMarkedUnread) return
+
+  const humanActive = await Promise.race([
+    isHumanActive(chatId),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:isHumanActiveUnread')), 4000))
+  ])
+
+  if (!humanActive){
+    console.log(`[CONTROL] Marcado como no leido detectada. No se necesita liberar control.`)
+    return
+  } 
+
+  await Promise.race([
+    releaseHuman(chatId),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:releaseHumanUnread')), 4000))
+  ])
+
+  console.log(`[CONTROL] Conversacion marcada como no leida detectada por ${source}: control devuelto al bot`)
+}
+
+function startUnreadPoller(client) {
+  setInterval(async () => {
+    try {
+      const chats = await client.getChats()
+      for (const chat of chats) {
+        await processUnreadSignal(chat, 'poller')
+      }
+    } catch (error) {
+      console.warn('[CONTROL] Error en sondeo unread:', error.message || error)
+    }
+  }, UNREAD_POLL_INTERVAL_MS)
+}
 
 async function reinitializeClient(client, reason = 'unknown') {
   if (isReinitializing) return
@@ -113,6 +175,7 @@ client.on('qr', (qr) => {
 client.on('ready', () => {
   console.log('[BOT] WhatBot listo')
   startScheduler(client)
+  startUnreadPoller(client)
 })
 
 client.on('authenticated', () => {
@@ -126,6 +189,14 @@ client.on('auth_failure', (msg) => {
 
 client.on('change_state', (state) => {
   console.log('[STATE] Estado del cliente:', state)
+})
+
+client.on('unread_count', async (chat) => {
+  try {
+    await processUnreadSignal(chat, 'unread_count')
+  } catch (error) {
+    console.warn('[CONTROL] No se pudo procesar unread_count para liberar control humano:', error.message || error)
+  }
 })
 
 client.on('disconnected', (reason) => {
@@ -202,9 +273,70 @@ client.on('message_create', async (message) => {
     // ESCALATION: si el dueño responde en el grupo Whatbot y hay preguntas pendientes, contestar al usuario
     if (isCommandGroup && hasPendingQuestions()) {
       console.log('[ESCALATION] Respondiendo a pregunta pendiente')
-      const pending = getOldestPendingQuestion()
+      const messageText = String(message.body || '').trim()
+      const explicitId = extractEscalationId(messageText)
+      let pending = null
+
+      if (explicitId) {
+        pending = getPendingQuestionById(explicitId)
+        if (!pending) {
+          const invalidIdMsg = `⚠️ No encontré pendiente con ID ${explicitId}. Usa el ID que aparece en el mensaje de escalación.`
+          addBotMessage(invalidIdMsg)
+          await Promise.race([
+            message.reply(invalidIdMsg),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:invalidEscalationIdReply')), 8000))
+          ])
+          return
+        }
+      }
+
+      if (!pending) {
+        try {
+          if (message.hasQuotedMsg) {
+            const quoted = await message.getQuotedMessage()
+            pending = getPendingQuestionByMessageId(quoted?.id)
+            const quotedId = extractEscalationId(quoted?.body || '')
+            if (!pending && quotedId) {
+              pending = getPendingQuestionById(quotedId)
+            }
+          }
+        } catch (quoteErr) {
+          console.warn('[ESCALATION] No se pudo leer mensaje citado para resolver ID:', quoteErr.message || quoteErr)
+        }
+      }
+
+      if (!pending && getPendingCount() === 1) {
+        pending = getOldestPendingQuestion()
+      }
+
+      if (!pending) {
+        const pendingList = listPendingQuestions(5)
+          .map(item => `• #${item.escalationId} - ${item.contactName || item.userId.replace('@c.us', '')}`)
+          .join('\n')
+        const ambiguousMsg =
+          '⚠️ Hay varias preguntas pendientes y no pude identificar a cuál responder. ' +
+          'Responde citando el mensaje correcto o inicia tu texto con #ID.\n\nPendientes:\n' + pendingList
+        addBotMessage(ambiguousMsg)
+        await Promise.race([
+          message.reply(ambiguousMsg),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ambiguousEscalationReply')), 8000))
+        ])
+        return
+      }
+
       if (pending) {
         try {
+          const ownerHint = messageText.replace(/#([A-Z0-9]{6,})/i, '').trim()
+          if (!ownerHint) {
+            const emptyHintMsg = `⚠️ Faltó la respuesta para #${pending.escalationId}. Escribe el texto después del ID o responde citando el pendiente.`
+            addBotMessage(emptyHintMsg)
+            await Promise.race([
+              message.reply(emptyHintMsg),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:emptyEscalationHintReply')), 8000))
+            ])
+            return
+          }
+
           console.log('[ESCALATION] Cargando contexto del usuario')
           let context = []
           try {
@@ -219,7 +351,7 @@ client.on('message_create', async (message) => {
 
           console.log('[ESCALATION] Generando respuesta expandida')
           const reply = await Promise.race([
-            generateReplyFromHint(pending.content, message.body, context),
+            generateReplyFromHint(pending.content, ownerHint, context),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:generateReplyFromHint')), 15000))
           ])
 
@@ -245,9 +377,10 @@ client.on('message_create', async (message) => {
             console.warn('[ESCALATION] No se pudo guardar en BD, pero respuesta ya fue enviada:', dbErr.message)
           }
 
-          removePendingQuestion(pending.userId)
+          removePendingQuestion(pending.escalationId)
 
-          const confirmMsg = `✅ Respondido a ${pending.userId.replace('@c.us', '')}`
+          const resolvedLabel = pending.contactName || pending.userId.replace('@c.us', '')
+          const confirmMsg = `✅ Respondido a ${resolvedLabel} (ID ${pending.escalationId})`
           addBotMessage(confirmMsg)
           console.log('[ESCALATION] Enviando confirmacion al grupo')
           await Promise.race([

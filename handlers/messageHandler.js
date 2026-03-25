@@ -7,7 +7,8 @@ const { isHumanActive } = require('../services/conversationState')
 const { isBotActive } = require('../services/botState')
 const { addBotMessage } = require('../services/botMessages')
 const { addMessage } = require('../services/messageBuffer')
-const { addPendingQuestion } = require('../services/escalation')
+const { addPendingQuestion, attachEscalationMessageId } = require('../services/escalation')
+const { sendSplitMessage } = require('../services/messageSplitter')
 
 function withTimeout(promise, ms, label) {
     return Promise.race([
@@ -71,7 +72,11 @@ async function handleMessage(client, message) {
 
             if (learned) {
                 console.log('[PIPELINE] Respuesta aprendida encontrada, enviando')
-                await message.reply(learned)
+                await withTimeout(
+                    sendSplitMessage(message, user, learned, { useReply: true, client }),
+                    30000,
+                    'sendLearnedReply'
+                )
                 await saveMessage(user, 'user', combinedMessage)
                 await saveMessage(user, 'assistant', learned)
                 return
@@ -98,10 +103,14 @@ async function handleMessage(client, message) {
                         if (whatbotGroup) {
                             const contact = await withTimeout(message.getContact(), 3000, 'getContactForEscalation')
                             const name = contact.pushname || contact.name || user.replace('@c.us', '')
-                            const escalationMsg = `❓ *Pregunta pendiente*\n_De: ${name}_\n\n"${combinedMessage}"\n\n_Respóndeme aquí para contestarle._`
+                            const escalationId = addPendingQuestion(user, combinedMessage, { contactName: name })
+                            const escalationMsg = `❓ *Pregunta pendiente* [ID:${escalationId}]\n_De: ${name}_\n\n"${combinedMessage}"\n\n_Responde citando este mensaje o inicia tu texto con #${escalationId} para contestarle al chat correcto._`
                             addBotMessage(escalationMsg)
-                            await withTimeout(whatbotGroup.sendMessage(escalationMsg), 8000, 'sendEscalation')
-                            addPendingQuestion(user, combinedMessage)
+                            const sentEscalationMessage = await withTimeout(whatbotGroup.sendMessage(escalationMsg), 8000, 'sendEscalation')
+                            const linked = attachEscalationMessageId(escalationId, sentEscalationMessage?.id)
+                            if (!linked) {
+                                console.warn(`[ESCALATION] No se pudo vincular mensaje de grupo al pendiente ${escalationId}`)
+                            }
                             console.log('[ESCALATION] Pregunta enviada al grupo Whatbot')
                         } else {
                             console.warn('[ESCALATION] Grupo Whatbot no encontrado')
@@ -122,11 +131,12 @@ async function handleMessage(client, message) {
             }
 
             // esto es para contestar en modo "responder" al mensaje solo un 40% de las veces, para que no siempre se vea como un bot
-            if (Math.random() < 0.4) {
-                await withTimeout(message.reply(reply), 8000, 'replyWithQuote')
-            } else {
-                await withTimeout(client.sendMessage(user, reply), 8000, 'sendMessage')
-            }
+            const useReply = Math.random() < 0.4
+            await withTimeout(
+                sendSplitMessage(message, user, reply, { useReply, client }),
+                30000,
+                'sendSplitMessage'
+            )
 
             await saveMessage(user, 'user', combinedMessage)
             await saveMessage(user, 'assistant', reply)
