@@ -164,6 +164,31 @@ async function handleMessage(client, message) {
                         logger.error('[ESCALATION] Error al enviar al grupo Whatbot', err, logCtx)
                         logger.categoryMetric('escalation', 'send_error', {}, logCtx)
                     }
+                } else {
+                    // Si la decision es esperar (sin escalar), avisar al grupo Whatbot
+                    try {
+                        const chats = await withTimeout(client.getChats(), 6000, 'getChatsForWaitNotify')
+                        const whatbotGroup = chats.find(c => c.isGroup && c.name?.toLowerCase() === 'whatbot')
+                        if (whatbotGroup) {
+                            const contact = await withTimeout(message.getContact(), 3000, 'getContactForWaitNotify')
+                            const name = contact.pushname || contact.name || user.replace('@c.us', '')
+                            const waitMsg = `🕑 Esperando respuesta en la conversacion con ${name}`
+                            addBotMessage(waitMsg)
+                            await withTimeout(
+                                whatbotGroup.sendMessage(waitMsg),
+                                8000,
+                                'sendWaitNotification'
+                            )
+                            logger.info('[DECISION] Notificacion de espera enviada al grupo Whatbot', {}, logCtx)
+                            logger.categoryMetric('decision', 'wait_notified', {}, logCtx)
+                        } else {
+                            logger.warn('[DECISION] Grupo Whatbot no encontrado para notificacion de espera', {}, logCtx)
+                            logger.categoryMetric('decision', 'wait_notify_group_missing', {}, logCtx)
+                        }
+                    } catch (waitNotifyErr) {
+                        logger.warn('[DECISION] No se pudo enviar notificacion de espera al grupo', {}, logCtx)
+                        logger.categoryMetric('decision', 'wait_notify_error', {}, logCtx)
+                    }
                 }
                 return
             }
