@@ -36,6 +36,8 @@ Reglas IMPORTANTES (aplican siempre):
 - NO responder si se necesita información de proyectos o tareas específicas del dueño
 - NO responder a mensajes tipo: "luego te digo", "te marco", "oye tú"
 - Si no estás seguro, prefiere NO responder y marca askHuman=true
+- Si te piden agendar algo, un plan, salida, reunion, trabajo o lo que sea, pide siempre detalles como fecha, hora, lugar y personas involucradas para tener claro el contexto. Si no te dan esos detalles, NO respondas y marca askHuman=true.
+- Si ya te dieron detalles para agendar NO respondas y marca askHuman=true, porque el bot no puede gestionar agendas ni compromisos reales, eso siempre lo debe manejar un humano.
 
 Responde ÚNICAMENTE en JSON válido:
 {
@@ -64,13 +66,13 @@ Responde ÚNICAMENTE en JSON válido:
 
       if (decision.shouldReply) {
         console.log('[DECISION] Resultado: responder')
-      } else if (decision.askHuman) {
+      } else if (decision.askHuman && !decision.shouldReply) {
         console.log('[DECISION] Resultado: esperar y escalar a humano')
       } else {
         console.log('[DECISION] Resultado: esperar (sin respuesta)')
       }
-
       return decision
+
     } catch (err) {
       console.log('[DECISION] Respuesta no es JSON valido, se fuerza escalamiento a humano')
       return { shouldReply: false, confidence: 0, askHuman: true, reason: 'parse_error' }

@@ -9,6 +9,7 @@ const { addBotMessage } = require('../services/botMessages')
 const { addMessage } = require('../services/messageBuffer')
 const { addPendingQuestion, attachEscalationMessageId } = require('../services/escalation')
 const { sendSplitMessage } = require('../services/messageSplitter')
+const { findInstructionForMessage } = require('../services/ownerInstructions')
 
 function withTimeout(promise, ms, label) {
     return Promise.race([
@@ -53,11 +54,13 @@ async function handleMessage(client, message) {
                 context = []
             }
 
-            // Extraer tag de persona del nombre del contacto (ej: "Juan :Rapper" → "rapper")
+            // Extraer tag de persona del nombre del contacto (ej: "Juan :Rapper" -> "rapper")
             let persona = null
+            let contactNameForAI = ''
             try {
                 const contact = await withTimeout(message.getContact(), 3000, 'getContact')
                 const contactName = contact.pushname || contact.name || ''
+                contactNameForAI = contact.name || contact.pushname || user.replace('@c.us', '')
                 const match = contactName.match(/:([\w]+)/i)
                 if (match) persona = match[1].toLowerCase()
             } catch (_) {}
@@ -95,6 +98,29 @@ async function handleMessage(client, message) {
             const confidenceThreshold = decision.isContinuation ? 0.5 : 0.7
 
             if (!decision.shouldReply || decision.confidence < confidenceThreshold) {
+                // Buscar instruccion temporal del dueño antes de escalar a humano
+                try {
+                    const ownerInstruction = await withTimeout(
+                        findInstructionForMessage(user, combinedMessage),
+                        5000,
+                        'findInstructionForMessage'
+                    )
+
+                    if (ownerInstruction?.response) {
+                        console.log('[PIPELINE] Respuesta por instruccion temporal encontrada, enviando')
+                        await withTimeout(
+                            sendSplitMessage(message, user, ownerInstruction.response, { useReply: true, client }),
+                            30000,
+                            'sendOwnerInstructionReply'
+                        )
+                        await saveMessage(user, 'user', combinedMessage)
+                        await saveMessage(user, 'assistant', ownerInstruction.response)
+                        return
+                    }
+                } catch (instructionErr) {
+                    console.warn('[PIPELINE] No se pudo evaluar instruccion temporal, continuando con escalacion')
+                }
+
                 // Si el bot no sabe responder, escalar al dueño en el grupo Whatbot
                 if (decision.askHuman) {
                     try {
@@ -123,7 +149,7 @@ async function handleMessage(client, message) {
             }
 
             console.log('[PIPELINE] Generando respuesta')
-            const reply = await withTimeout(generateReply(combinedMessage, context, persona), 15000, 'generateReply')
+            const reply = await withTimeout(generateReply(combinedMessage, context, persona, contactNameForAI), 15000, 'generateReply')
 
             if (!reply) {
                 console.warn('[PIPELINE] No se genero respuesta')

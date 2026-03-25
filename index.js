@@ -19,6 +19,8 @@ const {
   removePendingQuestion
 } = require('./services/escalation')
 const { generateReplyFromHint } = require('./services/openai')
+const { parseOwnerInstruction, saveOwnerInstruction } = require('./services/ownerInstructions')
+const db = require('./services/db')
 
 const os = require('os')
 
@@ -267,6 +269,60 @@ client.on('message_create', async (message) => {
       const handled = await handleCommand(client, message)
       if (handled) return
     }
+
+    // INSTRUCCIONES TEMPORALES: "si pregunta X sobre Y dile que Z"
+    if (isCommandGroup) {
+      const parsedInstruction = parseOwnerInstruction(message.body)
+      if (parsedInstruction) {
+        try {
+          const saveResult = await Promise.race([
+            saveOwnerInstruction(client, message.body),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:saveOwnerInstruction')), 8000))
+          ])
+
+          if (!saveResult?.ok) {
+            if (saveResult?.reason === 'ambiguous_contact' && Array.isArray(saveResult?.resolveResult?.options)) {
+              const options = saveResult.resolveResult.options
+                .slice(0, 2)
+                .map((opt, idx) => `${idx + 1}) ${opt.label}`)
+                .join('\n')
+              const ambiguousMsg = `⚠️ Instruccion detectada, pero el contacto es ambiguo. Intenta con el nombre completo.\nOpciones probables:\n${options}`
+              addBotMessage(ambiguousMsg)
+              await Promise.race([
+                message.reply(ambiguousMsg),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ownerInstructionAmbiguousReply')), 8000))
+              ])
+              return
+            }
+
+            const failMsg = '⚠️ No pude guardar la instruccion. Verifica el nombre del contacto y vuelve a intentar.'
+            addBotMessage(failMsg)
+            await Promise.race([
+              message.reply(failMsg),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ownerInstructionFailReply')), 8000))
+            ])
+            return
+          }
+
+          const info = saveResult.instruction
+          const okMsg = `✅ Instruccion guardada para ${info.contactLabel || info.userId.replace('@c.us', '')}.\nTema: "${info.topic}"\nCaduca: ${new Date(info.expiresAt).toLocaleString('es-MX')}`
+          addBotMessage(okMsg)
+          await Promise.race([
+            message.reply(okMsg),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ownerInstructionOkReply')), 8000))
+          ])
+        } catch (instructionErr) {
+          console.error('[INSTRUCTION] Error al guardar instruccion temporal', instructionErr)
+          const errorMsg = '⚠️ Hubo un error guardando la instruccion temporal.'
+          addBotMessage(errorMsg)
+          await Promise.race([
+            message.reply(errorMsg),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ownerInstructionErrorReply')), 8000))
+          ])
+        }
+        return
+      }
+    }
     //  no aprender comandos
     if (message.body.startsWith('/')) return
 
@@ -435,4 +491,16 @@ client.on('message_create', async (message) => {
   }
 })
 
-client.initialize()
+async function bootstrap() {
+  try {
+    await db.ensureBaseTables()
+    console.log('[DB] Tablas base verificadas/creadas correctamente')
+  } catch (err) {
+    console.error('[DB] Error al verificar/crear tablas base', err)
+    process.exit(1)
+  }
+
+  client.initialize()
+}
+
+bootstrap()

@@ -23,3 +23,19 @@ CREATE TABLE learned_responses (
 );
 
 ALTER TABLE learned_responses MODIFY embedding JSON;
+
+CREATE TABLE owner_instructions (
+	id INT(11) NOT NULL AUTO_INCREMENT,
+	user_id VARCHAR(50) NOT NULL COLLATE 'utf8mb4_uca1400_ai_ci',
+	contact_label VARCHAR(120) NULL DEFAULT NULL COLLATE 'utf8mb4_uca1400_ai_ci',
+	topic VARCHAR(255) NOT NULL COLLATE 'utf8mb4_uca1400_ai_ci',
+	response TEXT NOT NULL COLLATE 'utf8mb4_uca1400_ai_ci',
+	expires_at DATETIME NOT NULL,
+	created_at TIMESTAMP NULL DEFAULT current_timestamp(),
+	PRIMARY KEY (id) USING BTREE,
+	INDEX idx_owner_user_topic (user_id, topic) USING BTREE,
+	INDEX idx_owner_expires (expires_at) USING BTREE
+)
+COLLATE='utf8mb4_uca1400_ai_ci'
+ENGINE=InnoDB
+;

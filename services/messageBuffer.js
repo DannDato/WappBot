@@ -1,6 +1,6 @@
 const buffers = new Map()
 
-const DELAY_MS = 10000 // 10 segundos 
+const DELAY_MS = 10000 // 10 segundos
 
 function addMessage(user, message, callback) {
   if (!buffers.has(user)) {
@@ -20,7 +20,7 @@ function addMessage(user, message, callback) {
   }
 
   buffer.timer = setTimeout(() => {
-    const combined = buffer.messages.join(' ')    
+    const combined = buffer.messages.join(' ')
     buffers.delete(user)
     callback(combined)
   }, DELAY_MS)

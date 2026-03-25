@@ -49,7 +49,7 @@ function splitMessage(text, maxChars = MESSAGE_CONFIG.MAX_CHARS_PER_MESSAGE) {
     const lines = msg.split('\n')
     const chunked = []
     let chunk = ''
-    
+
     for (const line of lines) {
       if ((chunk + '\n' + line).length > maxChars && chunk) {
         chunked.push(chunk.trim())
@@ -59,7 +59,7 @@ function splitMessage(text, maxChars = MESSAGE_CONFIG.MAX_CHARS_PER_MESSAGE) {
       }
     }
     if (chunk) chunked.push(chunk.trim())
-    
+
     return chunked
   })
 }
@@ -81,7 +81,7 @@ async function sendSplitMessage(message, chatId, text, options = {}) {
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
-    
+
     try {
       if (useReply && i === 0) {
         // Solo usar reply en el primer mensaje
@@ -95,7 +95,7 @@ async function sendSplitMessage(message, chatId, text, options = {}) {
 
       // Si hay más mensajes, esperar el intervalo antes de enviar el siguiente
       if (i < messages.length - 1) {
-        await new Promise(resolve => 
+        await new Promise(resolve =>
           setTimeout(resolve, MESSAGE_CONFIG.INTERVAL_BETWEEN_MESSAGES)
         )
       }
