@@ -146,7 +146,7 @@ async function handleMessage(client, message) {
                             const contact = await withTimeout(message.getContact(), 3000, 'getContactForEscalation')
                             const name = contact.pushname || contact.name || user.replace('@c.us', '')
                             const escalationId = addPendingQuestion(user, combinedMessage, { contactName: name })
-                            const escalationMsg = `❓ *Pregunta pendiente* [ID:${escalationId}]\n_De: ${name}_\n\n"${combinedMessage}"\n\n_Responde citando este mensaje o inicia tu texto con #${escalationId} para contestarle al chat correcto._`
+                            const escalationMsg = `❓ *Pregunta*\n_De: ${name}_\n\n"${combinedMessage}"\n\n`
                             addBotMessage(escalationMsg)
                             const sentEscalationMessage = await withTimeout(whatbotGroup.sendMessage(escalationMsg), 8000, 'sendEscalation')
                             const linked = attachEscalationMessageId(escalationId, sentEscalationMessage?.id)
