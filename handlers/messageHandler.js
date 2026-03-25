@@ -10,6 +10,7 @@ const { addMessage } = require('../services/messageBuffer')
 const { addPendingQuestion, attachEscalationMessageId } = require('../services/escalation')
 const { sendSplitMessage } = require('../services/messageSplitter')
 const { findInstructionForMessage } = require('../services/ownerInstructions')
+const logger = require('../services/logger')
 
 function withTimeout(promise, ms, label) {
     return Promise.race([
@@ -21,36 +22,44 @@ function withTimeout(promise, ms, label) {
 async function handleMessage(client, message) {
     if (await shouldIgnoreMessage(message, client)) return
 
-    console.log('[MESSAGE] Nuevo mensaje recibido')
     const user = message.from
+    const logCtx = logger.createContext({ userId: user, conversationId: user })
+    logger.info('[MESSAGE] Nuevo mensaje recibido', { messageId: message.id?._serialized || null }, logCtx)
+    logger.categoryMetric('message', 'received', {}, logCtx)
     const content = message.body.trim()
+    const flowStartedAt = Date.now()
 
     // BUFFER
     addMessage(user, content, async (combinedMessage) => {
         try {
-            console.log('[BUFFER] Mensaje consolidado listo')
+            logger.info('[BUFFER] Mensaje consolidado listo', { combinedLength: combinedMessage.length }, logCtx)
+            logger.categoryMetric('buffer', 'ready', {}, logCtx)
 
             if (!isBotActive()) {
-                console.log('[CONTROL] Bot en modo silencioso, no se respondera')
+                logger.info('[CONTROL] Bot en modo silencioso, no se respondera', {}, logCtx)
+                logger.categoryMetric('control', 'bot_silent', {}, logCtx)
                 return
             }
 
             try {
                 const humanActive = await withTimeout(isHumanActive(user), 5000, 'isHumanActive')
                 if (humanActive) {
-                    console.log('[CONTROL] Humano tiene el control, el bot no respondera')
+                    logger.info('[CONTROL] Humano tiene el control, el bot no respondera', {}, logCtx)
+                    logger.categoryMetric('control', 'human_active', {}, logCtx)
                     return
                 }
             } catch (err) {
-                console.warn('[CONTROL] No se pudo verificar control humano, continuando con automatizacion')
+                logger.warn('[CONTROL] No se pudo verificar control humano, continuando con automatizacion', { reason: err.message }, logCtx)
+                logger.categoryMetric('control', 'human_check_error', {}, logCtx)
             }
 
-            console.log('[PIPELINE] Cargando contexto')
+            logger.info('[PIPELINE] Cargando contexto', {}, logCtx)
             let context = []
             try {
                 context = await withTimeout(getContext(user), 5000, 'getContext')
             } catch (err) {
-                console.warn('[PIPELINE] Contexto no disponible, continuando sin historial')
+                logger.warn('[PIPELINE] Contexto no disponible, continuando sin historial', { reason: err.message }, logCtx)
+                logger.categoryMetric('pipeline', 'context_unavailable', {}, logCtx)
                 context = []
             }
 
@@ -65,16 +74,18 @@ async function handleMessage(client, message) {
                 if (match) persona = match[1].toLowerCase()
             } catch (_) {}
 
-            console.log('[PIPELINE] Buscando respuesta aprendida')
+            logger.info('[PIPELINE] Buscando respuesta aprendida', {}, logCtx)
             let learned = null
             try {
                 learned = await withTimeout(findLearnedResponse(combinedMessage), 12000, 'findLearnedResponse')
             } catch (err) {
-                console.warn('[PIPELINE] Retrieval no disponible, continuando con decision')
+                logger.warn('[PIPELINE] Retrieval no disponible, continuando con decision', { reason: err.message }, logCtx)
+                logger.categoryMetric('pipeline', 'retrieval_error', {}, logCtx)
             }
 
             if (learned) {
-                console.log('[PIPELINE] Respuesta aprendida encontrada, enviando')
+                logger.info('[PIPELINE] Respuesta aprendida encontrada, enviando', {}, logCtx)
+                logger.categoryMetric('pipeline', 'learned_reply', {}, logCtx)
                 await withTimeout(
                     sendSplitMessage(message, user, learned, { useReply: true, client }),
                     30000,
@@ -85,14 +96,17 @@ async function handleMessage(client, message) {
                 return
             }
 
-            console.log('[PIPELINE] Ejecutando decideReply')
+            logger.info('[PIPELINE] Ejecutando decideReply', { contextCount: context.length }, logCtx)
             let decision = null
             try {
                 decision = await withTimeout(decideReply(combinedMessage, context), 12000, 'decideReply')
             } catch (err) {
-                console.warn('[PIPELINE] Decision no disponible, se escalara a humano')
+                logger.warn('[PIPELINE] Decision no disponible, se escalara a humano', { reason: err.message }, logCtx)
+                logger.categoryMetric('decision', 'error', {}, logCtx)
                 decision = { shouldReply: false, confidence: 0, askHuman: true, isContinuation: false, reason: 'decision_timeout_or_error' }
             }
+
+            logger.categoryMetric('decision', decision.shouldReply ? 'reply_yes' : 'reply_no', { askHuman: Boolean(decision.askHuman), continuation: Boolean(decision.isContinuation) }, logCtx)
 
             // Si es continuación de un hilo activo, relajar el umbral de confianza
             const confidenceThreshold = decision.isContinuation ? 0.5 : 0.7
@@ -107,7 +121,8 @@ async function handleMessage(client, message) {
                     )
 
                     if (ownerInstruction?.response) {
-                        console.log('[PIPELINE] Respuesta por instruccion temporal encontrada, enviando')
+                        logger.info('[PIPELINE] Respuesta por instruccion temporal encontrada, enviando', { topic: ownerInstruction.topic }, logCtx)
+                        logger.categoryMetric('instruction', 'auto_reply', { topic: ownerInstruction.topic }, logCtx)
                         await withTimeout(
                             sendSplitMessage(message, user, ownerInstruction.response, { useReply: true, client }),
                             30000,
@@ -118,7 +133,8 @@ async function handleMessage(client, message) {
                         return
                     }
                 } catch (instructionErr) {
-                    console.warn('[PIPELINE] No se pudo evaluar instruccion temporal, continuando con escalacion')
+                    logger.warn('[PIPELINE] No se pudo evaluar instruccion temporal, continuando con escalacion', { reason: instructionErr.message }, logCtx)
+                    logger.categoryMetric('instruction', 'lookup_error', {}, logCtx)
                 }
 
                 // Si el bot no sabe responder, escalar al dueño en el grupo Whatbot
@@ -135,24 +151,32 @@ async function handleMessage(client, message) {
                             const sentEscalationMessage = await withTimeout(whatbotGroup.sendMessage(escalationMsg), 8000, 'sendEscalation')
                             const linked = attachEscalationMessageId(escalationId, sentEscalationMessage?.id)
                             if (!linked) {
-                                console.warn(`[ESCALATION] No se pudo vincular mensaje de grupo al pendiente ${escalationId}`)
+                                logger.warn(`[ESCALATION] No se pudo vincular mensaje de grupo al pendiente ${escalationId}`, {}, logCtx)
+                                logger.categoryMetric('escalation', 'link_error', {}, logCtx)
                             }
-                            console.log('[ESCALATION] Pregunta enviada al grupo Whatbot')
+                            logger.info('[ESCALATION] Pregunta enviada al grupo Whatbot', { escalationId }, logCtx)
+                            logger.categoryMetric('escalation', 'created', {}, logCtx)
                         } else {
-                            console.warn('[ESCALATION] Grupo Whatbot no encontrado')
+                            logger.warn('[ESCALATION] Grupo Whatbot no encontrado', {}, logCtx)
+                            logger.categoryMetric('escalation', 'group_missing', {}, logCtx)
                         }
                     } catch (err) {
-                        console.error('[ESCALATION] Error al enviar al grupo Whatbot', err)
+                        logger.error('[ESCALATION] Error al enviar al grupo Whatbot', err, logCtx)
+                        logger.categoryMetric('escalation', 'send_error', {}, logCtx)
                     }
                 }
                 return
             }
 
-            console.log('[PIPELINE] Generando respuesta')
+            const openaiStartedAt = Date.now()
+            logger.info('[PIPELINE] Generando respuesta', {}, logCtx)
             const reply = await withTimeout(generateReply(combinedMessage, context, persona, contactNameForAI), 15000, 'generateReply')
+            logger.metric('openai.generateReply.latency_ms', Date.now() - openaiStartedAt, {}, logCtx)
+            logger.categoryMetric('openai', 'generate_reply', {}, logCtx)
 
             if (!reply) {
-                console.warn('[PIPELINE] No se genero respuesta')
+                logger.warn('[PIPELINE] No se genero respuesta', {}, logCtx)
+                logger.categoryMetric('pipeline', 'empty_reply', {}, logCtx)
                 return
             }
 
@@ -166,9 +190,12 @@ async function handleMessage(client, message) {
 
             await saveMessage(user, 'user', combinedMessage)
             await saveMessage(user, 'assistant', reply)
-            console.log('[PIPELINE] Flujo completado')
+            logger.metric('pipeline.flow.latency_ms', Date.now() - flowStartedAt, {}, logCtx)
+            logger.info('[PIPELINE] Flujo completado', { replyLength: reply.length }, logCtx)
+            logger.categoryMetric('pipeline', 'completed', {}, logCtx)
         } catch (err) {
-            console.error('[PIPELINE] Error no controlado en callback del buffer', err)
+            logger.error('[PIPELINE] Error no controlado en callback del buffer', err, logCtx)
+            logger.categoryMetric('pipeline', 'error', {}, logCtx)
         }
     })
 }

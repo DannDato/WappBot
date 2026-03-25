@@ -1,5 +1,6 @@
 const cron = require('node-cron')
 const { getDailyMessages, generateSummary } = require('./report')
+const logger = require('./logger')
 
 const REPORT_TIMEZONE = 'America/Mexico_City'
 
@@ -22,6 +23,7 @@ async function buildContactLabels(client, messages) {
 
 async function sendDailyReport(client, options = {}) {
   const title = options.title || '📊 *Reporte diario - 9:00 PM*'
+  logger.categoryMetric('report', 'build_started', { manual: Boolean(options.title) })
 
   const messages = await getDailyMessages()
   const contactLabels = await buildContactLabels(client, messages)
@@ -34,7 +36,8 @@ async function sendDailyReport(client, options = {}) {
   )
 
   if (!whatbotGroup) {
-    console.log('[REPORT] Grupo WhatBot no encontrado, no se puede enviar el reporte diario')
+    logger.warn('[REPORT] Grupo WhatBot no encontrado, no se puede enviar el reporte diario')
+    logger.categoryMetric('report', 'group_missing')
     return false
   }
 
@@ -43,20 +46,23 @@ async function sendDailyReport(client, options = {}) {
     `${title}\n\n${summary}`
   )
 
-  console.log('[REPORT] Reporte diario enviado al grupo WhatBot')
+  logger.info('[REPORT] Reporte diario enviado al grupo WhatBot', { messageCount: messages.length })
+  logger.categoryMetric('report', 'sent', { messageCount: messages.length })
   return true
 }
 
 async function startScheduler(client) {
   // Todos los dias a las 9:00 PM hora de Mexico central
   cron.schedule('0 21 * * *', async () => {
-    console.log('[REPORT] Generando reporte diario')
+    logger.info('[REPORT] Generando reporte diario')
+    logger.categoryMetric('report', 'scheduled_trigger')
 
     try {
       await sendDailyReport(client)
 
     } catch (error) {
-      console.error('[ERROR] Error al generar o enviar el reporte diario', error)
+      logger.error('[ERROR] Error al generar o enviar el reporte diario', error)
+      logger.categoryMetric('report', 'error')
     }
   }, {
     timezone: REPORT_TIMEZONE

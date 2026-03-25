@@ -1,5 +1,6 @@
 // Almacena preguntas que el bot no sabe responder, pendientes de respuesta del dueño
 // Se indexa por ID de escalacion para evitar cruces de destino cuando hay multiples pendientes.
+const logger = require('./logger')
 const pendingQuestions = new Map()
 const escalationMessageIndex = new Map()
 
@@ -23,7 +24,8 @@ function addPendingQuestion(userId, content, meta = {}) {
     contactName: meta.contactName || null,
     timestamp: Date.now()
   })
-  console.log(`[ESCALATION] Pregunta pendiente registrada de ${userId} con ID ${escalationId}`)
+  logger.info(`[ESCALATION] Pregunta pendiente registrada de ${userId} con ID ${escalationId}`, { userId, escalationId }, { userId, conversationId: userId })
+  logger.categoryMetric('escalation', 'pending_added', {}, { userId, conversationId: userId })
   return escalationId
 }
 
@@ -59,13 +61,20 @@ function normalizeMessageId(messageId) {
 function attachEscalationMessageId(escalationId, messageId) {
   const key = String(escalationId || '').trim().toUpperCase()
   const normalizedMessageId = normalizeMessageId(messageId)
-  if (!key || !normalizedMessageId) return false
+  if (!key || !normalizedMessageId) {
+    logger.categoryMetric('escalation', 'attach_invalid')
+    return false
+  }
 
   const pending = pendingQuestions.get(key)
-  if (!pending) return false
+  if (!pending) {
+    logger.categoryMetric('escalation', 'attach_missing_pending')
+    return false
+  }
 
   pending.escalationMessageId = normalizedMessageId
   escalationMessageIndex.set(normalizedMessageId, key)
+  logger.categoryMetric('escalation', 'attach_success', {}, { userId: pending.userId, conversationId: pending.userId })
   return true
 }
 
@@ -101,7 +110,8 @@ function removePendingQuestion(identifier) {
       escalationMessageIndex.delete(pending.escalationMessageId)
     }
     pendingQuestions.delete(key)
-    console.log(`[ESCALATION] Pregunta resuelta para ${pending.userId} (ID ${key})`)
+    logger.info(`[ESCALATION] Pregunta resuelta para ${pending.userId} (ID ${key})`, { userId: pending.userId, escalationId: key }, { userId: pending.userId, conversationId: pending.userId })
+    logger.categoryMetric('escalation', 'resolved', {}, { userId: pending.userId, conversationId: pending.userId })
     return true
   }
 
@@ -111,7 +121,8 @@ function removePendingQuestion(identifier) {
         escalationMessageIndex.delete(data.escalationMessageId)
       }
       pendingQuestions.delete(escalationId)
-      console.log(`[ESCALATION] Pregunta resuelta para ${identifier} (ID ${escalationId})`)
+      logger.info(`[ESCALATION] Pregunta resuelta para ${identifier} (ID ${escalationId})`, { userId: identifier, escalationId }, { userId: identifier, conversationId: identifier })
+      logger.categoryMetric('escalation', 'resolved', {}, { userId: identifier, conversationId: identifier })
       return true
     }
   }

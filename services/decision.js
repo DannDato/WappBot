@@ -1,4 +1,5 @@
 const OpenAI = require('openai')
+const logger = require('./logger')
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -6,7 +7,8 @@ const openai = new OpenAI({
 
 async function decideReply(message, context = []) {
   try {
-    console.log('[DECISION] Analizando mensaje para decidir accion')
+    logger.info('[DECISION] Analizando mensaje para decidir accion', { contextCount: context.length })
+    logger.categoryMetric('decision', 'analyze', { contextCount: context.length })
 
     // Formatear historial como texto para que el clasificador lo analice como datos
     const historyText = context.length > 0
@@ -65,21 +67,26 @@ Responde ÚNICAMENTE en JSON válido:
       const decision = JSON.parse(text)
 
       if (decision.shouldReply) {
-        console.log('[DECISION] Resultado: responder')
+        logger.info('[DECISION] Resultado: responder', { decision })
+        logger.categoryMetric('decision', 'result_reply', { askHuman: Boolean(decision.askHuman), continuation: Boolean(decision.isContinuation) })
       } else if (decision.askHuman && !decision.shouldReply) {
-        console.log('[DECISION] Resultado: esperar y escalar a humano')
+        logger.info('[DECISION] Resultado: esperar y escalar a humano', { decision })
+        logger.categoryMetric('decision', 'result_escalate', { continuation: Boolean(decision.isContinuation) })
       } else {
-        console.log('[DECISION] Resultado: esperar (sin respuesta)')
+        logger.info('[DECISION] Resultado: esperar (sin respuesta)', { decision })
+        logger.categoryMetric('decision', 'result_wait', { continuation: Boolean(decision.isContinuation) })
       }
       return decision
 
     } catch (err) {
-      console.log('[DECISION] Respuesta no es JSON valido, se fuerza escalamiento a humano')
+      logger.warn('[DECISION] Respuesta no es JSON valido, se fuerza escalamiento a humano', { raw: text })
+      logger.categoryMetric('decision', 'parse_error')
       return { shouldReply: false, confidence: 0, askHuman: true, reason: 'parse_error' }
     }
 
   } catch (error) {
-    console.error('[ERROR] Error al decidir respuesta', error)
+    logger.error('[ERROR] Error al decidir respuesta', error)
+    logger.categoryMetric('decision', 'error')
     return { shouldReply: false, confidence: 0, askHuman: true, reason: 'error' }
   }
 }

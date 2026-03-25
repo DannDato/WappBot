@@ -21,6 +21,7 @@ const {
 const { generateReplyFromHint } = require('./services/openai')
 const { parseOwnerInstruction, saveOwnerInstruction } = require('./services/ownerInstructions')
 const db = require('./services/db')
+const logger = require('./services/logger')
 
 const os = require('os')
 
@@ -61,7 +62,7 @@ async function processUnreadSignal(chat, source = 'event') {
   ])
 
   if (!humanActive){
-    console.log(`[CONTROL] Marcado como no leido detectada. No se necesita liberar control.`)
+    logger.info('[CONTROL] Marcado como no leido detectada. No se necesita liberar control.', { source, chatId }, { userId: chatId, conversationId: chatId })
     return
   } 
 
@@ -70,7 +71,7 @@ async function processUnreadSignal(chat, source = 'event') {
     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:releaseHumanUnread')), 4000))
   ])
 
-  console.log(`[CONTROL] Conversacion marcada como no leida detectada por ${source}: control devuelto al bot`)
+  logger.info(`[CONTROL] Conversacion marcada como no leida detectada por ${source}: control devuelto al bot`, { source, chatId }, { userId: chatId, conversationId: chatId })
 }
 
 function startUnreadPoller(client) {
@@ -81,7 +82,7 @@ function startUnreadPoller(client) {
         await processUnreadSignal(chat, 'poller')
       }
     } catch (error) {
-      console.warn('[CONTROL] Error en sondeo unread:', error.message || error)
+      logger.warn('[CONTROL] Error en sondeo unread', { reason: error.message || String(error) })
     }
   }, UNREAD_POLL_INTERVAL_MS)
 }
@@ -91,16 +92,16 @@ async function reinitializeClient(client, reason = 'unknown') {
   isReinitializing = true
 
   try {
-    console.warn('[RECOVERY] Reintentando sesion de WhatsApp. Motivo:', reason)
+    logger.warn('[RECOVERY] Reintentando sesion de WhatsApp', { reason })
     try {
       await client.destroy()
     } catch (_) {}
 
     await new Promise(resolve => setTimeout(resolve, 3000))
     await client.initialize()
-    console.log('[RECOVERY] Reconexion solicitada correctamente')
+    logger.info('[RECOVERY] Reconexion solicitada correctamente', { reason })
   } catch (err) {
-    console.error('[RECOVERY] Error al reintentar inicializacion', err)
+    logger.error('[RECOVERY] Error al reintentar inicializacion', err)
   } finally {
     isReinitializing = false
   }
@@ -108,20 +109,20 @@ async function reinitializeClient(client, reason = 'unknown') {
 
 process.on('unhandledRejection', (reason) => {
   if (isTransientContextError(reason)) {
-    console.warn('[WARN] Error transitorio de contexto detectado (unhandledRejection). Se ignora para evitar caida.')
+    logger.warn('[WARN] Error transitorio de contexto detectado (unhandledRejection). Se ignora para evitar caida.')
     return
   }
 
-  console.error('[PROCESS] unhandledRejection', reason)
+  logger.error('[PROCESS] unhandledRejection', reason)
 })
 
 process.on('uncaughtException', (error) => {
   if (isTransientContextError(error)) {
-    console.warn('[WARN] Error transitorio de contexto detectado (uncaughtException). Se ignora para evitar caida.')
+    logger.warn('[WARN] Error transitorio de contexto detectado (uncaughtException). Se ignora para evitar caida.')
     return
   }
 
-  console.error('[PROCESS] uncaughtException', error)
+  logger.error('[PROCESS] uncaughtException', error)
 })
 
 let puppeteerConfig = {
@@ -133,7 +134,7 @@ let puppeteerConfig = {
 const platform = process.platform
 
 if (platform === 'linux') {
-  console.log('[SYSTEM] Sistema detectado: Linux')
+  logger.info('[SYSTEM] Sistema detectado: Linux')
 
   puppeteerConfig = {
     headless: true,
@@ -147,7 +148,7 @@ if (platform === 'linux') {
   }
 
 } else if (platform === 'win32') {
-  console.log('[SYSTEM] Sistema detectado: Windows')
+  logger.info('[SYSTEM] Sistema detectado: Windows')
 
   puppeteerConfig = {
     headless: true,
@@ -156,7 +157,7 @@ if (platform === 'linux') {
   }
 
 } else if (platform === 'darwin') {
-  console.log('[SYSTEM] Sistema detectado: macOS')
+  logger.info('[SYSTEM] Sistema detectado: macOS')
 
   puppeteerConfig = {
     headless: true
@@ -170,39 +171,39 @@ const client = new Client({
 })
 
 client.on('qr', (qr) => {
-  console.log('[AUTH]')
+  logger.info('[AUTH] QR generado para autenticacion')
   qrcode.generate(qr, { small: true })
 })
 
 client.on('ready', () => {
-  console.log('[BOT] WhatBot listo')
+  logger.info('[BOT] WhatBot listo')
   startScheduler(client)
   startUnreadPoller(client)
 })
 
 client.on('authenticated', () => {
-  console.log('[AUTH] Sesion autenticada')
+  logger.info('[AUTH] Sesion autenticada')
 })
 
 client.on('auth_failure', (msg) => {
-  console.error('[AUTH] Fallo de autenticacion', msg)
+  logger.error('[AUTH] Fallo de autenticacion', new Error(String(msg || 'auth_failure')))
   reinitializeClient(client, 'auth_failure')
 })
 
 client.on('change_state', (state) => {
-  console.log('[STATE] Estado del cliente:', state)
+  logger.info('[STATE] Estado del cliente', { state })
 })
 
 client.on('unread_count', async (chat) => {
   try {
     await processUnreadSignal(chat, 'unread_count')
   } catch (error) {
-    console.warn('[CONTROL] No se pudo procesar unread_count para liberar control humano:', error.message || error)
+    logger.warn('[CONTROL] No se pudo procesar unread_count para liberar control humano', { reason: error.message || String(error) })
   }
 })
 
 client.on('disconnected', (reason) => {
-  console.error('[STATE] Cliente desconectado:', reason)
+  logger.error('[STATE] Cliente desconectado', new Error(String(reason || 'disconnected')))
   reinitializeClient(client, 'disconnected')
 })
 
@@ -210,37 +211,45 @@ client.on('message', async (message) => {
   try {
     if (message.from === 'status@broadcast') return
 
-    console.log('[EVENT] message recibido')
+    const logCtx = { userId: message.from, conversationId: message.from }
+
+    logger.info('[EVENT] message recibido', { messageId: message.id?._serialized || null }, logCtx)
+    logger.categoryMetric('event', 'message_received', {}, logCtx)
     const chat = await message.getChat()
     const isContact = chat.isGroup ? null : await chat.getContact()
     
     // si no está en mis contactos no contesta
     if(!isContact) {
-      console.log('[EVENT] descartado: chat sin contacto directo')
+      logger.info('[EVENT] descartado: chat sin contacto directo', {}, logCtx)
+      logger.categoryMetric('event', 'ignored_no_contact', {}, logCtx)
       return
     }
     // ignora mensajes del bot
     if (message.fromMe) {
-      console.log('[EVENT] descartado: fromMe')
+      logger.info('[EVENT] descartado: fromMe', {}, logCtx)
+      logger.categoryMetric('event', 'ignored_from_me', {}, logCtx)
       return
     }
 
     // ignorar grupos
     if (message.from.includes('@g.us')) {
-      console.log('[EVENT] descartado: grupo')
+      logger.info('[EVENT] descartado: grupo', {}, logCtx)
+      logger.categoryMetric('event', 'ignored_group', {}, logCtx)
       return
     }
 
     //manejamos ahora si el mensaje
-    console.log('[EVENT] enviando a handleMessage')
+    logger.info('[EVENT] enviando a handleMessage', {}, logCtx)
     await handleMessage(client, message)
 
   } catch (error) {
     if (isTransientContextError(error)) {
-      console.warn('[WARN] Error transitorio al manejar message. Se omite este evento.')
+      logger.warn('[WARN] Error transitorio al manejar message. Se omite este evento.', { reason: error.message || String(error) })
+      logger.categoryMetric('event', 'transient_error', {}, { userId: message.from, conversationId: message.from })
       return
     }
-    console.error('[ERROR] Error al manejar el mensaje', error)
+    logger.error('[ERROR] Error al manejar el mensaje', error, { userId: message.from, conversationId: message.from })
+    logger.categoryMetric('event', 'message_error', {}, { userId: message.from, conversationId: message.from })
   }
 })
 
@@ -250,17 +259,20 @@ client.on('message_create', async (message) => {
 
     if (!message.fromMe) return
     const chat = await message.getChat()
+    const logCtx = { userId: chat.id?._serialized || message.from, conversationId: chat.id?._serialized || message.from }
 
     const isCommandGroup = chat.isGroup && chat.name?.toLowerCase() === 'whatbot'
     const isContact = chat.isGroup ? null : await chat.getContact()
     // Permitir mensajes del grupo Whatbot aunque no sea un contacto individual
     if (!isContact && !isCommandGroup) return
 
-    console.log('[MESSAGE] Nuevo mensaje creado')
+    logger.info('[MESSAGE] Nuevo mensaje creado', { messageId: message.id?._serialized || null }, logCtx)
+    logger.categoryMetric('message', 'created', {}, logCtx)
 
     // IGNORAR mensajes del bot
     if (isBotMessage(message.body)) {
-      console.log('[MESSAGE] Mensaje del bot ignorado')
+      logger.info('[MESSAGE] Mensaje del bot ignorado', {}, logCtx)
+      logger.categoryMetric('message', 'ignored_bot', {}, logCtx)
       return
     }
 
@@ -282,6 +294,7 @@ client.on('message_create', async (message) => {
 
           if (!saveResult?.ok) {
             if (saveResult?.reason === 'ambiguous_contact' && Array.isArray(saveResult?.resolveResult?.options)) {
+              logger.categoryMetric('instruction', 'ambiguous_contact', {}, logCtx)
               const options = saveResult.resolveResult.options
                 .slice(0, 2)
                 .map((opt, idx) => `${idx + 1}) ${opt.label}`)
@@ -296,6 +309,7 @@ client.on('message_create', async (message) => {
             }
 
             const failMsg = '⚠️ No pude guardar la instruccion. Verifica el nombre del contacto y vuelve a intentar.'
+            logger.categoryMetric('instruction', 'save_failed', { reason: saveResult?.reason || 'unknown' }, logCtx)
             addBotMessage(failMsg)
             await Promise.race([
               message.reply(failMsg),
@@ -305,6 +319,7 @@ client.on('message_create', async (message) => {
           }
 
           const info = saveResult.instruction
+          logger.categoryMetric('instruction', 'saved', { topic: info.topic }, logCtx)
           const okMsg = `✅ Instruccion guardada para ${info.contactLabel || info.userId.replace('@c.us', '')}.\nTema: "${info.topic}"\nCaduca: ${new Date(info.expiresAt).toLocaleString('es-MX')}`
           addBotMessage(okMsg)
           await Promise.race([
@@ -312,7 +327,8 @@ client.on('message_create', async (message) => {
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ownerInstructionOkReply')), 8000))
           ])
         } catch (instructionErr) {
-          console.error('[INSTRUCTION] Error al guardar instruccion temporal', instructionErr)
+          logger.error('[INSTRUCTION] Error al guardar instruccion temporal', instructionErr, logCtx)
+          logger.categoryMetric('instruction', 'error', {}, logCtx)
           const errorMsg = '⚠️ Hubo un error guardando la instruccion temporal.'
           addBotMessage(errorMsg)
           await Promise.race([
@@ -328,7 +344,8 @@ client.on('message_create', async (message) => {
 
     // ESCALATION: si el dueño responde en el grupo Whatbot y hay preguntas pendientes, contestar al usuario
     if (isCommandGroup && hasPendingQuestions()) {
-      console.log('[ESCALATION] Respondiendo a pregunta pendiente')
+      logger.info('[ESCALATION] Respondiendo a pregunta pendiente', {}, logCtx)
+      logger.categoryMetric('escalation', 'reply_flow_started', {}, logCtx)
       const messageText = String(message.body || '').trim()
       const explicitId = extractEscalationId(messageText)
       let pending = null
@@ -357,7 +374,8 @@ client.on('message_create', async (message) => {
             }
           }
         } catch (quoteErr) {
-          console.warn('[ESCALATION] No se pudo leer mensaje citado para resolver ID:', quoteErr.message || quoteErr)
+          logger.warn('[ESCALATION] No se pudo leer mensaje citado para resolver ID', { reason: quoteErr.message || String(quoteErr) }, logCtx)
+          logger.categoryMetric('escalation', 'quote_lookup_error', {}, logCtx)
         }
       }
 
@@ -377,6 +395,7 @@ client.on('message_create', async (message) => {
           message.reply(ambiguousMsg),
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:ambiguousEscalationReply')), 8000))
         ])
+        logger.categoryMetric('escalation', 'ambiguous_pending', {}, logCtx)
         return
       }
 
@@ -393,7 +412,7 @@ client.on('message_create', async (message) => {
             return
           }
 
-          console.log('[ESCALATION] Cargando contexto del usuario')
+          logger.info('[ESCALATION] Cargando contexto del usuario', { targetUserId: pending.userId }, logCtx)
           let context = []
           try {
             context = await Promise.race([
@@ -401,24 +420,27 @@ client.on('message_create', async (message) => {
               new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:getContext')), 5000))
             ])
           } catch (ctxErr) {
-            console.warn('[ESCALATION] No se pudo cargar contexto, continuando sin historial:', ctxErr.message)
+            logger.warn('[ESCALATION] No se pudo cargar contexto, continuando sin historial', { reason: ctxErr.message }, logCtx)
             context = []
           }
 
-          console.log('[ESCALATION] Generando respuesta expandida')
+          const hintStartedAt = Date.now()
+          logger.info('[ESCALATION] Generando respuesta expandida', { targetUserId: pending.userId }, logCtx)
           const reply = await Promise.race([
             generateReplyFromHint(pending.content, ownerHint, context),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:generateReplyFromHint')), 15000))
           ])
+          logger.metric('openai.generateReplyFromHint.latency_ms', Date.now() - hintStartedAt, { targetUserId: pending.userId }, logCtx)
+          logger.categoryMetric('openai', 'generate_reply_from_hint', {}, logCtx)
 
-          console.log('[ESCALATION] Enviando respuesta al usuario original')
+          logger.info('[ESCALATION] Enviando respuesta al usuario original', { targetUserId: pending.userId }, logCtx)
           await Promise.race([
             client.sendMessage(pending.userId, reply),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:sendMessage')), 8000))
           ])
           addBotMessage(reply)
 
-          console.log('[ESCALATION] Guardando contexto')
+          logger.info('[ESCALATION] Guardando contexto', { targetUserId: pending.userId }, logCtx)
           try {
             await Promise.race([
               saveMessage(pending.userId, 'assistant', reply),
@@ -430,7 +452,8 @@ client.on('message_create', async (message) => {
               new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:saveLearning')), 8000))
             ])
           } catch (dbErr) {
-            console.warn('[ESCALATION] No se pudo guardar en BD, pero respuesta ya fue enviada:', dbErr.message)
+              logger.warn('[ESCALATION] No se pudo guardar en BD, pero respuesta ya fue enviada', { reason: dbErr.message }, logCtx)
+              logger.categoryMetric('escalation', 'save_partial_error', {}, logCtx)
           }
 
           removePendingQuestion(pending.escalationId)
@@ -438,14 +461,16 @@ client.on('message_create', async (message) => {
           const resolvedLabel = pending.contactName || pending.userId.replace('@c.us', '')
           const confirmMsg = `✅ Respondido a ${resolvedLabel} (ID ${pending.escalationId})`
           addBotMessage(confirmMsg)
-          console.log('[ESCALATION] Enviando confirmacion al grupo')
+          logger.info('[ESCALATION] Enviando confirmacion al grupo', { escalationId: pending.escalationId }, logCtx)
           await Promise.race([
             message.reply(confirmMsg),
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:confirmationReply')), 8000))
           ])
-          console.log('[ESCALATION] Flujo completado')
+          logger.info('[ESCALATION] Flujo completado', { escalationId: pending.escalationId }, logCtx)
+          logger.categoryMetric('escalation', 'completed', {}, logCtx)
         } catch (err) {
-          console.error('[ESCALATION] Error en flujo de respuesta', err.message || err)
+          logger.error('[ESCALATION] Error en flujo de respuesta', err, logCtx)
+          logger.categoryMetric('escalation', 'error', {}, logCtx)
         }
         return
       }
@@ -462,7 +487,8 @@ client.on('message_create', async (message) => {
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:markHumanActive')), 5000))
       ])
     } catch (err) {
-      console.warn('[WARNING] No se pudo marcar humano como activo:', err.message)
+      logger.warn('[WARNING] No se pudo marcar humano como activo', { reason: err.message }, { userId: user, conversationId: user })
+      logger.categoryMetric('control', 'mark_human_error', {}, { userId: user, conversationId: user })
     }
 
     try {
@@ -476,27 +502,31 @@ client.on('message_create', async (message) => {
           saveLearning(lastUserMsg, message.body),
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout:saveLearning')), 8000))
         ])
-        console.log('[EMBEDDING] Aprendizaje guardado')
+        logger.info('[EMBEDDING] Aprendizaje guardado', { userId: user }, { userId: user, conversationId: user })
+        logger.categoryMetric('embedding', 'learned', {}, { userId: user, conversationId: user })
       }
     } catch (err) {
-      console.warn('[WARNING] No se pudo guardar aprendizaje:', err.message)
+      logger.warn('[WARNING] No se pudo guardar aprendizaje', { reason: err.message }, { userId: user, conversationId: user })
+      logger.categoryMetric('embedding', 'learn_error', {}, { userId: user, conversationId: user })
     }
 
   } catch (error) {
     if (isTransientContextError(error)) {
-      console.warn('[WARN] Error transitorio al manejar message_create. Se omite este evento.')
+      logger.warn('[WARN] Error transitorio al manejar message_create. Se omite este evento.', { reason: error.message || String(error) })
+      logger.categoryMetric('message', 'transient_error', {}, { userId: message.from, conversationId: message.from })
       return
     }
-    console.error('[ERROR] Error al manejar el mensaje creado', error)
+    logger.error('[ERROR] Error al manejar el mensaje creado', error)
+    logger.categoryMetric('message', 'create_error', {}, { userId: message.from, conversationId: message.from })
   }
 })
 
 async function bootstrap() {
   try {
     await db.ensureBaseTables()
-    console.log('[DB] Tablas base verificadas/creadas correctamente')
+    logger.info('[DB] Tablas base verificadas/creadas correctamente')
   } catch (err) {
-    console.error('[DB] Error al verificar/crear tablas base', err)
+    logger.error('[DB] Error al verificar/crear tablas base', err)
     process.exit(1)
   }
 

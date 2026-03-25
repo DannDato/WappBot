@@ -1,4 +1,5 @@
 let botActive = true
+const logger = require('./logger')
 
 function isBotActive() {
   return botActive
@@ -6,12 +7,14 @@ function isBotActive() {
 
 function startBot() {
   botActive = true
-  console.log('[BOT] Bot activado')
+  logger.info('[BOT] Bot activado')
+  logger.categoryMetric('bot', 'activated')
 }
 
 function stopBot() {
   botActive = false
-  console.log('[BOT] Bot desactivado')
+  logger.info('[BOT] Bot desactivado')
+  logger.categoryMetric('bot', 'deactivated')
 }
 
 module.exports = {

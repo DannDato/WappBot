@@ -1,10 +1,12 @@
 const db = require('./db')
 const { getEmbedding } = require('./embeddings')
 const { cosineSimilarity } = require('../utils/similarity')
+const logger = require('./logger')
 
 const SIMILARITY_THRESHOLD = 0.75
 
 async function findLearnedResponse(message) {
+  logger.categoryMetric('retrieval', 'lookup_started')
   const embedding = await getEmbedding(message)
 
   const [rows] = await db.query(
@@ -29,9 +31,12 @@ async function findLearnedResponse(message) {
   }
 
   if (bestScore >= SIMILARITY_THRESHOLD) {
-    console.log('[EVAL] Mejor respuesta aprendida ')
+    logger.info('[EVAL] Mejor respuesta aprendida', { score: bestScore })
+    logger.categoryMetric('retrieval', 'hit', { score: Number(bestScore.toFixed(3)) })
     return bestMatch.bot_response
   }
+
+  logger.categoryMetric('retrieval', 'miss', { score: Number(bestScore.toFixed(3)) })
 
   return null
 }

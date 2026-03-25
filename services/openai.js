@@ -1,4 +1,5 @@
 const OpenAI = require('openai')
+const logger = require('./logger')
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -159,7 +160,7 @@ async function generateReply(message, context = [], persona = null, contactName 
     return response.choices[0].message.content.trim()
 
   } catch (error) {
-    console.error('[ERROR]')
+    logger.error('[OPENAI] Error al generar respuesta', error)
     return null
   }
 }
@@ -218,7 +219,7 @@ Escribe solamente la respuesta final que se le enviara al contacto por WhatsApp.
       .trim()
 
   } catch (error) {
-    console.error('[ERROR] generateReplyFromHint', error)
+    logger.error('[OPENAI] Error en generateReplyFromHint', error)
     return ownerHint.trim() // fallback: usar la pista directamente
   }
 }

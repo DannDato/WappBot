@@ -1,16 +1,21 @@
+const logger = require('../services/logger')
+
 async function shouldIgnoreMessage(message, client) {
   if (message.from === 'status@broadcast') {
-    console.log('[FILTER] Ignorado: status broadcast')
+    logger.info('[FILTER] Ignorado: status broadcast')
+    logger.categoryMetric('filter', 'ignored_status_broadcast')
     return true
   }
 
   if (message.fromMe) {
-    console.log('[FILTER] Ignorado: enviado por mi')
+    logger.info('[FILTER] Ignorado: enviado por mi')
+    logger.categoryMetric('filter', 'ignored_from_me')
     return true
   }
 
   if (message.from.includes('@g.us')) {
-    console.log('[FILTER] Ignorado: grupo')
+    logger.info('[FILTER] Ignorado: grupo')
+    logger.categoryMetric('filter', 'ignored_group')
     return true
   }
 
@@ -20,13 +25,15 @@ async function shouldIgnoreMessage(message, client) {
   try {
     contact = await message.getContact()
   } catch (error) {
-    console.log('[FILTER] Ignorado: no se pudo obtener contacto')
+    logger.warn('[FILTER] Ignorado: no se pudo obtener contacto', { reason: error.message || String(error) })
+    logger.categoryMetric('filter', 'contact_lookup_error')
     return true
   }
 
   // Regla estricta: solo responder a contactos guardados.
   if (contact?.isMyContact) {
-    console.log('[FILTER] Mensaje valido para procesar')
+    logger.info('[FILTER] Mensaje valido para procesar', { userId: message.from })
+    logger.categoryMetric('filter', 'accepted_direct_contact', {}, { userId: message.from, conversationId: message.from })
     return false
   }
 
@@ -36,7 +43,8 @@ async function shouldIgnoreMessage(message, client) {
   try {
     contacts = await client.getContacts()
   } catch (error) {
-    console.log('[FILTER] Ignorado: no se pudo consultar libreta de contactos')
+    logger.warn('[FILTER] Ignorado: no se pudo consultar libreta de contactos', { reason: error.message || String(error) })
+    logger.categoryMetric('filter', 'contacts_lookup_error')
     return true
   }
 
@@ -44,11 +52,13 @@ async function shouldIgnoreMessage(message, client) {
   const inMyContacts = contacts.some(c => c?.isMyContact && normalizeId(c?.id?._serialized || '') === incomingId)
 
   if (!inMyContacts) {
-    console.log('[FILTER] Ignorado: numero no guardado en contactos')
+    logger.info('[FILTER] Ignorado: numero no guardado en contactos', { userId: message.from })
+    logger.categoryMetric('filter', 'ignored_not_in_contacts', {}, { userId: message.from, conversationId: message.from })
     return true
   }
 
-  console.log('[FILTER] Mensaje valido para procesar')
+  logger.info('[FILTER] Mensaje valido para procesar', { userId: message.from })
+  logger.categoryMetric('filter', 'accepted_fallback_contact', {}, { userId: message.from, conversationId: message.from })
   return false
 }
 

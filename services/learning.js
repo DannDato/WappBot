@@ -1,9 +1,17 @@
 const db = require('./db')
 const { getEmbedding } = require('./embeddings')
+const logger = require('./logger')
 
 async function saveLearning(userInput, botResponse) {
-  if (userInput.length < 5) return
-  if (!userInput || !botResponse) return
+  if (!userInput || !botResponse) {
+    logger.categoryMetric('embedding', 'skipped_empty')
+    return
+  }
+
+  if (userInput.length < 5) {
+    logger.categoryMetric('embedding', 'skipped_short_input', { inputLength: userInput.length })
+    return
+  }
 
   const embedding = await getEmbedding(userInput)
 
@@ -12,7 +20,8 @@ async function saveLearning(userInput, botResponse) {
     [userInput, botResponse, JSON.stringify(embedding)]
   )
 
-  console.log('[EMBEDDING] Aprendizaje guardado')
+  logger.info('[EMBEDDING] Aprendizaje guardado', { inputLength: userInput.length })
+  logger.categoryMetric('embedding', 'saved', { inputLength: userInput.length })
 }
 
 module.exports = { saveLearning }

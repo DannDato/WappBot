@@ -5,6 +5,7 @@ const MESSAGE_CONFIG = {
   // Intervalo (ms) entre envios de mensajes divididos
   INTERVAL_BETWEEN_MESSAGES: 600
 }
+const logger = require('./logger')
 
 /**
  * Divide un texto largo en múltiples mensajes respetando párrafos
@@ -77,7 +78,7 @@ async function sendSplitMessage(message, chatId, text, options = {}) {
   const messages = splitMessage(text, MESSAGE_CONFIG.MAX_CHARS_PER_MESSAGE)
   const count = messages.length
 
-  console.log(`[MESSAGE] Enviando ${count} mensaje(s) con umbral ${MESSAGE_CONFIG.MAX_CHARS_PER_MESSAGE} chars`)
+  logger.info(`[MESSAGE] Enviando ${count} mensaje(s) con umbral ${MESSAGE_CONFIG.MAX_CHARS_PER_MESSAGE} chars`, { chatId, count })
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
@@ -86,11 +87,11 @@ async function sendSplitMessage(message, chatId, text, options = {}) {
       if (useReply && i === 0) {
         // Solo usar reply en el primer mensaje
         await message.reply(msg)
-        console.log(`[MESSAGE] Mensaje 1/${count} enviado como reply (${msg.length} chars)`)
+        logger.info(`[MESSAGE] Mensaje 1/${count} enviado como reply (${msg.length} chars)`, { chatId, count })
       } else {
         // Usar sendMessage para los demás
         await client.sendMessage(chatId, msg)
-        console.log(`[MESSAGE] Mensaje ${i + 1}/${count} enviado (${msg.length} chars)`)
+        logger.info(`[MESSAGE] Mensaje ${i + 1}/${count} enviado (${msg.length} chars)`, { chatId, count })
       }
 
       // Si hay más mensajes, esperar el intervalo antes de enviar el siguiente
@@ -100,7 +101,7 @@ async function sendSplitMessage(message, chatId, text, options = {}) {
         )
       }
     } catch (err) {
-      console.error(`[MESSAGE] Error al enviar mensaje ${i + 1}/${count}:`, err.message)
+      logger.error(`[MESSAGE] Error al enviar mensaje ${i + 1}/${count}`, err, { userId: chatId, conversationId: chatId })
       throw err
     }
   }

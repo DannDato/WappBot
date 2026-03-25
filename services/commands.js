@@ -2,6 +2,7 @@ const { startBot, stopBot, isBotActive } = require('./botState')
 const { sendDailyReport } = require('./scheduler')
 const { releaseLatestHumanControl, releaseHuman } = require('./conversationState')
 const { resolveRecentContactByName } = require('./contactResolver')
+const logger = require('./logger')
 
 const PENDING_RESUME_TTL_MS = 5 * 60 * 1000
 const pendingResumeByChat = new Map()
@@ -51,57 +52,66 @@ async function handleCommand(client, message) {
   const [commandToken, ...argParts] = text.split(/\s+/)
   const command = commandToken.toLowerCase()
   const argsText = argParts.join(' ').trim()
+  const logCtx = { userId: message.from, conversationId: message.from }
 
-  console.log(`[COMMAND] Comando recibido: ${command}`)
+  logger.info(`[COMMAND] Comando recibido: ${command}`, { chatId: message.from })
+  logger.categoryMetric('command', 'received', { command }, logCtx)
 
   switch (command) {
     case '/wbstart':
     case '/start':
-      console.log('[COMMAND] Ejecutando activacion del bot')
+      logger.info('[COMMAND] Ejecutando activacion del bot', { chatId: message.from })
       startBot()
       await message.reply('🟢 Bot activado')
-      console.log('[COMMAND] Bot activado correctamente')
+      logger.info('[COMMAND] Bot activado correctamente', { chatId: message.from })
+      logger.categoryMetric('command', 'success', { command }, logCtx)
       return true
 
     case '/wbstop':
     case '/stop':
-      console.log('[COMMAND] Ejecutando modo silencioso')
+      logger.info('[COMMAND] Ejecutando modo silencioso', { chatId: message.from })
       stopBot()
       await message.reply('🔴 Bot en modo silencioso')
-      console.log('[COMMAND] Bot puesto en modo silencioso')
+      logger.info('[COMMAND] Bot puesto en modo silencioso', { chatId: message.from })
+      logger.categoryMetric('command', 'success', { command }, logCtx)
       return true
 
     case '/wbstatus':
     case '/status':
-      console.log('[COMMAND] Consultando estado del bot')
+      logger.info('[COMMAND] Consultando estado del bot', { chatId: message.from })
       const status = isBotActive() ? '🟢 Activo' : '🔴 Silencioso'
       await message.reply(`📊 Estado actual: ${status}`)
-      console.log(`[COMMAND] Estado reportado: ${status}`)
+      logger.info(`[COMMAND] Estado reportado: ${status}`, { chatId: message.from })
+      logger.categoryMetric('command', 'success', { command, status }, logCtx)
       return true
 
     case '/wbreport':
     case '/report':
-      console.log('[COMMAND] Generando reporte manual')
+      logger.info('[COMMAND] Generando reporte manual', { chatId: message.from })
       await message.reply('📝 Generando reporte diario...')
       try {
         const sent = await sendDailyReport(client, { title: '📊 *Reporte diario - manual*' })
         if (!sent) {
-          console.warn('[COMMAND] No se encontro el grupo Whatbot para enviar el reporte')
+          logger.warn('[COMMAND] No se encontro el grupo Whatbot para enviar el reporte', { chatId: message.from })
+          logger.categoryMetric('command', 'report_group_missing', { command }, logCtx)
           await message.reply('⚠️ No encontré el grupo Whatbot para enviar el reporte')
         } else {
-          console.log('[COMMAND] Reporte manual enviado correctamente')
+          logger.info('[COMMAND] Reporte manual enviado correctamente', { chatId: message.from })
+          logger.categoryMetric('command', 'success', { command }, logCtx)
         }
       } catch (error) {
-        console.error('[COMMAND] Error al generar reporte manual', error)
+        logger.error('[COMMAND] Error al generar reporte manual', error, { userId: message.from, conversationId: message.from })
+        logger.categoryMetric('command', 'error', { command }, logCtx)
         await message.reply('⚠️ No pude generar el reporte en este momento')
       }
       return true
 
     case '/wbhelp':
     case '/help':
-      console.log('[COMMAND] Mostrando ayuda de comandos')
+      logger.info('[COMMAND] Mostrando ayuda de comandos', { chatId: message.from })
       await message.reply(getHelpText())
-      console.log('[COMMAND] Ayuda enviada correctamente')
+      logger.info('[COMMAND] Ayuda enviada correctamente', { chatId: message.from })
+      logger.categoryMetric('command', 'success', { command }, logCtx)
       return true
 
     case '/wbresume':
@@ -111,7 +121,8 @@ async function handleCommand(client, message) {
         const pending = getPendingResume(chatId)
 
         if (!pending) {
-          console.log('[COMMAND] No hay seleccion pendiente para resume')
+          logger.info('[COMMAND] No hay seleccion pendiente para resume', { chatId: message.from })
+          logger.categoryMetric('command', 'resume_missing_selection', { command }, logCtx)
           await message.reply('ℹ️ No hay una selección pendiente. Usa /resume <nombre> primero')
           return true
         }
@@ -120,7 +131,8 @@ async function handleCommand(client, message) {
         const chosen = pending.options[index]
 
         if (!chosen) {
-          console.log('[COMMAND] Opcion de resume fuera de rango')
+          logger.warn('[COMMAND] Opcion de resume fuera de rango', { chatId: message.from, argsText })
+          logger.categoryMetric('command', 'resume_invalid_option', { command }, logCtx)
           await message.reply('⚠️ Opción inválida. Usa /resume 1 o /resume 2')
           return true
         }
@@ -129,9 +141,11 @@ async function handleCommand(client, message) {
           await releaseHuman(chosen.userId)
           clearPendingResume(chatId)
           await message.reply(`✅ Control devuelto al bot para ${chosen.label}`)
-          console.log('[COMMAND] Control devuelto al bot por seleccion numerica')
+          logger.info('[COMMAND] Control devuelto al bot por seleccion numerica', { chatId: message.from, userId: chosen.userId })
+          logger.categoryMetric('command', 'success', { command, mode: 'selection' }, logCtx)
         } catch (error) {
-          console.error('[COMMAND] Error al liberar control humano por seleccion', error)
+          logger.error('[COMMAND] Error al liberar control humano por seleccion', error, { userId: message.from, conversationId: message.from })
+          logger.categoryMetric('command', 'error', { command, mode: 'selection' }, logCtx)
           await message.reply('⚠️ No pude devolver el control por selección en este momento')
         }
 
@@ -139,7 +153,7 @@ async function handleCommand(client, message) {
       }
 
       if (argsText) {
-        console.log('[COMMAND] Intentando liberar control humano por nombre')
+        logger.info('[COMMAND] Intentando liberar control humano por nombre', { chatId: message.from, argsText })
         try {
           const result = await resolveRecentContactByName(client, argsText, 10)
 
@@ -147,7 +161,8 @@ async function handleCommand(client, message) {
             const first = result.options[0]
             const second = result.options[1]
             setPendingResume(message.from, result.options.slice(0, 2))
-            console.log('[COMMAND] Coincidencia ambigua en resume por nombre')
+            logger.warn('[COMMAND] Coincidencia ambigua en resume por nombre', { chatId: message.from, argsText })
+            logger.categoryMetric('command', 'resume_ambiguous', { command }, logCtx)
             await message.reply(
               `🤔 Encontré dos coincidencias parecidas. ¿Te refieres a:\n1) ${first.label}\n2) ${second.label}\n\nResponde con /resume 1 o /resume 2`
             )
@@ -155,41 +170,48 @@ async function handleCommand(client, message) {
           }
 
           if (!result.matched) {
-            console.log('[COMMAND] No se encontro coincidencia por nombre en ultimas conversaciones')
+            logger.info('[COMMAND] No se encontro coincidencia por nombre en ultimas conversaciones', { chatId: message.from, argsText })
+            logger.categoryMetric('command', 'resume_not_found', { command }, logCtx)
             await message.reply('ℹ️ No encontré una conversación reciente que coincida con ese nombre')
             return true
           }
 
           await releaseHuman(result.userId)
           await message.reply(`✅ Control devuelto al bot para ${result.label}`)
-          console.log('[COMMAND] Control devuelto al bot por nombre correctamente')
+          logger.info('[COMMAND] Control devuelto al bot por nombre correctamente', { chatId: message.from, userId: result.userId })
+          logger.categoryMetric('command', 'success', { command, mode: 'name' }, logCtx)
           return true
         } catch (error) {
-          console.error('[COMMAND] Error al liberar control humano por nombre', error)
+          logger.error('[COMMAND] Error al liberar control humano por nombre', error, { userId: message.from, conversationId: message.from })
+          logger.categoryMetric('command', 'error', { command, mode: 'name' }, logCtx)
           await message.reply('⚠️ No pude devolver el control por nombre en este momento')
           return true
         }
       }
 
-      console.log('[COMMAND] Liberando control humano mas reciente')
+      logger.info('[COMMAND] Liberando control humano mas reciente', { chatId: message.from })
       try {
         const releasedUser = await releaseLatestHumanControl()
         if (!releasedUser) {
-          console.log('[COMMAND] No habia conversaciones con control humano activo')
+          logger.info('[COMMAND] No habia conversaciones con control humano activo', { chatId: message.from })
+          logger.categoryMetric('command', 'resume_none_active', { command }, logCtx)
           await message.reply('ℹ️ No hay conversaciones con control humano activo')
           return true
         }
 
         await message.reply('✅ Control devuelto al bot en la conversacion mas reciente')
-        console.log('[COMMAND] Control devuelto al bot correctamente')
+        logger.info('[COMMAND] Control devuelto al bot correctamente', { chatId: message.from })
+        logger.categoryMetric('command', 'success', { command, mode: 'latest' }, logCtx)
       } catch (error) {
-        console.error('[COMMAND] Error al liberar control humano', error)
+        logger.error('[COMMAND] Error al liberar control humano', error, { userId: message.from, conversationId: message.from })
+        logger.categoryMetric('command', 'error', { command, mode: 'latest' }, logCtx)
         await message.reply('⚠️ No pude devolver el control al bot en este momento')
       }
       return true
 
     default:
-      console.warn(`[COMMAND] Comando no reconocido: ${command}`)
+      logger.warn(`[COMMAND] Comando no reconocido: ${command}`, { chatId: message.from })
+      logger.categoryMetric('command', 'unknown', { command }, logCtx)
       await message.reply('❓ Comando no reconocido')
       return true
   }
