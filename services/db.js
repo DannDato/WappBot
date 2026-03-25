@@ -55,6 +55,21 @@ async function ensureBaseTables() {
       INDEX idx_owner_expires (expires_at)
     )`
   )
+
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS token_usage_daily (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      usage_date DATE NOT NULL,
+      source VARCHAR(80) NOT NULL,
+      model VARCHAR(80) NOT NULL,
+      total_tokens INT NOT NULL DEFAULT 0,
+      prompt_tokens INT NOT NULL DEFAULT 0,
+      completion_tokens INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_token_usage_date (usage_date),
+      INDEX idx_token_usage_source (source)
+    )`
+  )
 }
 
 module.exports = {

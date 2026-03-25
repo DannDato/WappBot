@@ -1,6 +1,7 @@
 const cron = require('node-cron')
-const { getDailyMessages, generateSummary } = require('./report')
+const { getDailyMessages, generateReportBody } = require('./report')
 const logger = require('./logger')
+const { runDailyMaintenance } = require('./maintenance')
 
 const REPORT_TIMEZONE = 'America/Mexico_City'
 
@@ -27,7 +28,7 @@ async function sendDailyReport(client, options = {}) {
 
   const messages = await getDailyMessages()
   const contactLabels = await buildContactLabels(client, messages)
-  const summary = await generateSummary(messages, contactLabels)
+  const summary = await generateReportBody(messages, contactLabels)
 
   const chats = await client.getChats()
 
@@ -52,6 +53,27 @@ async function sendDailyReport(client, options = {}) {
 }
 
 async function startScheduler(client) {
+  // Ejecutar una vez al iniciar para no esperar al siguiente ciclo
+  try {
+    logger.info('[MAINTENANCE] Ejecutando limpieza inicial al arranque')
+    await runDailyMaintenance()
+  } catch (error) {
+    logger.error('[MAINTENANCE] Error en limpieza inicial al arranque', error)
+  }
+
+  // Limpieza diaria a las 2:30 AM hora de Mexico central
+  cron.schedule('30 2 * * *', async () => {
+    logger.info('[MAINTENANCE] Ejecutando limpieza diaria programada')
+
+    try {
+      await runDailyMaintenance()
+    } catch (error) {
+      logger.error('[MAINTENANCE] Error al ejecutar limpieza diaria programada', error)
+    }
+  }, {
+    timezone: REPORT_TIMEZONE
+  })
+
   // Todos los dias a las 9:00 PM hora de Mexico central
   cron.schedule('0 21 * * *', async () => {
     logger.info('[REPORT] Generando reporte diario')

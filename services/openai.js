@@ -1,5 +1,6 @@
 const OpenAI = require('openai')
 const logger = require('./logger')
+const { recordTokenUsage } = require('./tokenUsage')
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -157,6 +158,12 @@ async function generateReply(message, context = [], persona = null, contactName 
       max_tokens: 150
     })
 
+    await recordTokenUsage({
+      source: 'generateReply',
+      model: 'gpt-4.1-mini',
+      usage: response.usage
+    })
+
     return response.choices[0].message.content.trim()
 
   } catch (error) {
@@ -209,6 +216,12 @@ Escribe solamente la respuesta final que se le enviara al contacto por WhatsApp.
       ],
       temperature: 0.4,
       max_tokens: hintWordCount <= 4 ? 60 : 120
+    })
+
+    await recordTokenUsage({
+      source: 'generateReplyFromHint',
+      model: 'gpt-4.1-mini',
+      usage: response.usage
     })
 
     const text = response.choices[0].message.content.trim()

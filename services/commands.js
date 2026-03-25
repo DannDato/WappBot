@@ -116,7 +116,7 @@ async function handleCommand(client, message) {
 
       logger.info('[COMMAND] Generando resumen de metricas', { chatId: message.from, windowMinutes })
       try {
-        const summary = logger.formatMetricsSummary({ windowMinutes })
+        const summary = await logger.formatMetricsSummary({ windowMinutes })
         await message.reply(summary)
         logger.categoryMetric('command', 'success', { command, windowMinutes }, logCtx)
       } catch (error) {

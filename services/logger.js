@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const { getTokenUsageWindowSummary } = require('./tokenUsage')
 
 const LOG_DIR = path.join(process.cwd(), 'logs')
 const LOG_FILE = path.join(LOG_DIR, 'audit.log')
@@ -311,11 +312,21 @@ function formatLatencyLabel(name) {
   return labels[name] || name
 }
 
-function formatMetricsSummary(options = {}) {
+async function formatMetricsSummary(options = {}) {
   const summary = summarizeMetrics(options)
+  const tokenUsage = await getTokenUsageWindowSummary(summary.windowMinutes)
 
   if (summary.totalMetrics === 0) {
-    return `📈 *Metrics*\n\nNo hay métricas registradas en los últimos ${summary.windowMinutes} min`
+    return [
+      '📈 *Metrics*',
+      '',
+      `No hay métricas registradas en los últimos ${summary.windowMinutes} min`,
+      '',
+      '*Tokens*',
+      `- Total: ${tokenUsage.totalTokens}`,
+      `- Input: ${tokenUsage.promptTokens}`,
+      `- Output: ${tokenUsage.completionTokens}`
+    ].join('\n')
   }
 
   const counters = summary.counterTotals
@@ -415,6 +426,11 @@ function formatMetricsSummary(options = {}) {
     `📈 *Metrics (${summary.windowMinutes} min)*`,
     '',
     `Total muestras: ${summary.totalMetrics}`,
+    '',
+    '*Tokens*',
+    `- Total: ${tokenUsage.totalTokens}`,
+    `- Input: ${tokenUsage.promptTokens}`,
+    `- Output: ${tokenUsage.completionTokens}`,
     '',
     sectionText,
     '',

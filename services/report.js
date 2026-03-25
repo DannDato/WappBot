@@ -1,5 +1,6 @@
 const db = require('./db')
 const OpenAI = require('openai')
+const { getDailyTokenUsage, recordTokenUsage } = require('./tokenUsage')
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -114,10 +115,29 @@ Si una seccion no tiene contenido, escribe "- Sin novedades".
     max_tokens: 500
   })
 
+  await recordTokenUsage({
+    source: 'generateDailySummary',
+    model: 'gpt-4.1-mini',
+    usage: response.usage
+  })
+
   return response.choices[0].message.content
+}
+
+async function generateReportBody(messages, contactLabels = {}) {
+  const summary = await generateSummary(messages, contactLabels)
+  const tokenUsage = await getDailyTokenUsage(new Date())
+
+  const tokenBlock = [
+    '🤖 Tokens usados hoy',
+    `- Total: ${tokenUsage.totalTokens}`
+  ].join('\n')
+
+  return `${summary}\n\n${tokenBlock}`
 }
 
 module.exports = {
   getDailyMessages,
-  generateSummary
+  generateSummary,
+  generateReportBody
 }
