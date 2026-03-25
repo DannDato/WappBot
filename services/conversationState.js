@@ -48,8 +48,25 @@ async function releaseHuman(user) {
   )
 }
 
+async function releaseLatestHumanControl() {
+  const [rows] = await db.query(
+    `SELECT user_id
+     FROM conversations
+     WHERE human_active = true
+     ORDER BY last_human_message DESC
+     LIMIT 1`
+  )
+
+  if (rows.length === 0) return null
+
+  const userId = rows[0].user_id
+  await releaseHuman(userId)
+  return userId
+}
+
 module.exports = {
   markHumanActive,
   isHumanActive,
-  releaseHuman
+  releaseHuman,
+  releaseLatestHumanControl
 }

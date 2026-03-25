@@ -121,8 +121,8 @@ async function handleMessage(client, message) {
                 return
             }
 
-            // esto es para contestar en modo "responder" al mensaje solo un 30% de las veces, para que no siempre se vea como un bot
-            if (Math.random() < 0.3) {
+            // esto es para contestar en modo "responder" al mensaje solo un 40% de las veces, para que no siempre se vea como un bot
+            if (Math.random() < 0.4) {
                 await withTimeout(message.reply(reply), 8000, 'replyWithQuote')
             } else {
                 await withTimeout(client.sendMessage(user, reply), 8000, 'sendMessage')

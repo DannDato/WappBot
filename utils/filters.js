@@ -14,21 +14,37 @@ async function shouldIgnoreMessage(message, client) {
     return true
   }
 
+  const normalizeId = (id = '') => id.split('@')[0].replace(/\D/g, '')
+
   let contact = null
   try {
     contact = await message.getContact()
   } catch (error) {
-    console.log('[FILTER] No se pudo obtener contacto, se permite continuar')
+    console.log('[FILTER] Ignorado: no se pudo obtener contacto')
+    return true
+  }
+
+  // Regla estricta: solo responder a contactos guardados.
+  if (contact?.isMyContact) {
+    console.log('[FILTER] Mensaje valido para procesar')
     return false
   }
 
-  // En algunas cuentas (LID/MD), los ids pueden no coincidir entre message.from y getContacts.
-  // Consideramos valido si WhatsApp reporta contacto propio o si hay nombre/pushname.
-  const hasKnownName = Boolean(contact?.name || contact?.pushname)
-  const looksLikeMyContact = Boolean(contact?.isMyContact) || hasKnownName
+  // Fallback estricto para diferencias de formato de ID (ej: c.us vs lid).
+  // Solo pasa si tambien esta marcado como contacto propio en la libreta.
+  let contacts = []
+  try {
+    contacts = await client.getContacts()
+  } catch (error) {
+    console.log('[FILTER] Ignorado: no se pudo consultar libreta de contactos')
+    return true
+  }
 
-  if (!looksLikeMyContact) {
-    console.log('[FILTER] Ignorado: contacto no reconocido')
+  const incomingId = normalizeId(message.from)
+  const inMyContacts = contacts.some(c => c?.isMyContact && normalizeId(c?.id?._serialized || '') === incomingId)
+
+  if (!inMyContacts) {
+    console.log('[FILTER] Ignorado: numero no guardado en contactos')
     return true
   }
 
