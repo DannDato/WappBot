@@ -6,52 +6,79 @@ const openai = new OpenAI({
 
 async function decideReply(message, context = []) {
   try {
+    console.log('[DECISION] Analizando mensaje para decidir accion')
+
+    // Formatear historial como texto para que el clasificador lo analice como datos
+    const historyText = context.length > 0
+      ? context.slice(-8).map(m => `${m.role === 'user' ? 'Usuario' : 'Bot'}: ${m.content}`).join('\n')
+      : 'Sin historial previo.'
+
     const prompt = `
 Eres un sistema que decide si un bot de WhatsApp debe responder o no.
 
-Reglas IMPORTANTES:
-- NO responder si el mensaje parece:
-  - Muy personal
-  - Confidencial
-  - Algo que claramente requiere a un humano
-  - Mensajes tipo: "luego te digo", "te marco", "oye tú"
-- NO responder si no estás seguro
-- Responder SOLO si es algo casual, común o seguro
+--- HISTORIAL RECIENTE DE LA CONVERSACIÓN ---
+${historyText}
+--- FIN DEL HISTORIAL ---
 
-Responde en JSON válido con:
+Mensaje nuevo del usuario:
+"${message}"
+
+Primero analiza el historial:
+- ¿El bot ya estaba participando activamente en esta conversación sobre este mismo tema?
+- ¿El mensaje nuevo es una continuación natural de ese hilo, o es un tema completamente distinto?
+
+Si ES continuación de una conversación donde el bot ya participaba y el tema sigue siendo seguro → el bot DEBE seguir respondiendo para no romper el hilo de forma abrupta.
+Si NO es continuación → evaluar el mensaje de forma independiente con las reglas de abajo.
+
+Reglas IMPORTANTES (aplican siempre):
+- NO responder si el mensaje pregunta por la ubicación, estado o actividad actual del dueño en tiempo real: "¿ya llegaste?", "¿ya andas en tu casa?", "¿dónde estás?", "¿qué estás haciendo?", "¿ya saliste?". El bot NO sabe eso. Marca askHuman=true.
+- NO responder si el mensaje es muy personal, confidencial, o claramente requiere a un humano
+- NO responder si se necesita información de proyectos o tareas específicas del dueño
+- NO responder a mensajes tipo: "luego te digo", "te marco", "oye tú"
+- Si no estás seguro, prefiere NO responder y marca askHuman=true
+
+Responde ÚNICAMENTE en JSON válido:
 {
   "shouldReply": true/false,
   "confidence": 0-1,
+  "askHuman": true/false,
+  "isContinuation": true/false,
   "reason": "explicación corta"
 }
-
-Mensaje:
-"${message}"
 `
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4.1-mini',
       messages: [
-        { role: 'system', content: 'Eres un clasificador estricto.' },
-        ...context,
+        { role: 'system', content: 'Eres un clasificador estricto de mensajes de WhatsApp. Solo respondes JSON válido.' },
         { role: 'user', content: prompt }
       ],
       temperature: 0.2,
-      max_tokens: 100
+      max_tokens: 150
     })
 
     const text = response.choices[0].message.content.trim()
 
     try {
-      return JSON.parse(text)
+      const decision = JSON.parse(text)
+
+      if (decision.shouldReply) {
+        console.log('[DECISION] Resultado: responder')
+      } else if (decision.askHuman) {
+        console.log('[DECISION] Resultado: esperar y escalar a humano')
+      } else {
+        console.log('[DECISION] Resultado: esperar (sin respuesta)')
+      }
+
+      return decision
     } catch (err) {
-      console.log('[DECISION] Respuesta no es JSON válido:', text)
-      return { shouldReply: false, confidence: 0, reason: 'parse_error' }
+      console.log('[DECISION] Respuesta no es JSON valido, se fuerza escalamiento a humano')
+      return { shouldReply: false, confidence: 0, askHuman: true, reason: 'parse_error' }
     }
 
   } catch (error) {
     console.error('[ERROR] Error al decidir respuesta', error)
-    return { shouldReply: false, confidence: 0, reason: 'error' }
+    return { shouldReply: false, confidence: 0, askHuman: true, reason: 'error' }
   }
 }
 

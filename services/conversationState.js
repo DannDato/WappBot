@@ -1,6 +1,5 @@
 const db = require('./db')
 
-// ⏱️ 10 minutos de control humano
 const HUMAN_TIMEOUT_MS = 10 * 60 * 1000
 
 async function markHumanActive(user) {

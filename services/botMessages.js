@@ -2,7 +2,6 @@ const botMessages = new Set()
 
 function addBotMessage(content) {
   botMessages.add(content)
-
   // limpiar después de 10 segundos
   setTimeout(() => {
     botMessages.delete(content)

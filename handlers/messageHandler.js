@@ -7,47 +7,133 @@ const { isHumanActive } = require('../services/conversationState')
 const { isBotActive } = require('../services/botState')
 const { addBotMessage } = require('../services/botMessages')
 const { addMessage } = require('../services/messageBuffer')
+const { addPendingQuestion } = require('../services/escalation')
+
+function withTimeout(promise, ms, label) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout:${label}`)), ms))
+    ])
+}
 
 async function handleMessage(client, message) {
-    if (await shouldIgnoreMessage(message)) return
+    if (await shouldIgnoreMessage(message, client)) return
 
+    console.log('[MESSAGE] Nuevo mensaje recibido')
     const user = message.from
     const content = message.body.trim()
 
-    console.log(`[MESSAGE] ${user}: ${content}`)
-
-    // 🧠 BUFFER
+    // BUFFER
     addMessage(user, content, async (combinedMessage) => {
-        console.log(`[BUFFER] ${user}: ${combinedMessage}`)
+        try {
+            console.log('[BUFFER] Mensaje consolidado listo')
 
-        const context = await getContext(user)
+            if (!isBotActive()) {
+                console.log('[CONTROL] Bot en modo silencioso, no se respondera')
+                return
+            }
 
-        // 🧠 learned primero
-        const learned = await findLearnedResponse(combinedMessage)
+            try {
+                const humanActive = await withTimeout(isHumanActive(user), 5000, 'isHumanActive')
+                if (humanActive) {
+                    console.log('[CONTROL] Humano tiene el control, el bot no respondera')
+                    return
+                }
+            } catch (err) {
+                console.warn('[CONTROL] No se pudo verificar control humano, continuando con automatizacion')
+            }
 
-        if (learned) {
-            await message.reply(learned)
+            console.log('[PIPELINE] Cargando contexto')
+            let context = []
+            try {
+                context = await withTimeout(getContext(user), 5000, 'getContext')
+            } catch (err) {
+                console.warn('[PIPELINE] Contexto no disponible, continuando sin historial')
+                context = []
+            }
+
+            // Extraer tag de persona del nombre del contacto (ej: "Juan :Rapper" → "rapper")
+            let persona = null
+            try {
+                const contact = await withTimeout(message.getContact(), 3000, 'getContact')
+                const contactName = contact.pushname || contact.name || ''
+                const match = contactName.match(/:([\w]+)/i)
+                if (match) persona = match[1].toLowerCase()
+            } catch (_) {}
+
+            console.log('[PIPELINE] Buscando respuesta aprendida')
+            let learned = null
+            try {
+                learned = await withTimeout(findLearnedResponse(combinedMessage), 12000, 'findLearnedResponse')
+            } catch (err) {
+                console.warn('[PIPELINE] Retrieval no disponible, continuando con decision')
+            }
+
+            if (learned) {
+                console.log('[PIPELINE] Respuesta aprendida encontrada, enviando')
+                await message.reply(learned)
+                await saveMessage(user, 'user', combinedMessage)
+                await saveMessage(user, 'assistant', learned)
+                return
+            }
+
+            console.log('[PIPELINE] Ejecutando decideReply')
+            let decision = null
+            try {
+                decision = await withTimeout(decideReply(combinedMessage, context), 12000, 'decideReply')
+            } catch (err) {
+                console.warn('[PIPELINE] Decision no disponible, se escalara a humano')
+                decision = { shouldReply: false, confidence: 0, askHuman: true, isContinuation: false, reason: 'decision_timeout_or_error' }
+            }
+
+            // Si es continuación de un hilo activo, relajar el umbral de confianza
+            const confidenceThreshold = decision.isContinuation ? 0.5 : 0.7
+
+            if (!decision.shouldReply || decision.confidence < confidenceThreshold) {
+                // Si el bot no sabe responder, escalar al dueño en el grupo Whatbot
+                if (decision.askHuman) {
+                    try {
+                        const chats = await withTimeout(client.getChats(), 6000, 'getChats')
+                        const whatbotGroup = chats.find(c => c.isGroup && c.name?.toLowerCase() === 'whatbot')
+                        if (whatbotGroup) {
+                            const contact = await withTimeout(message.getContact(), 3000, 'getContactForEscalation')
+                            const name = contact.pushname || contact.name || user.replace('@c.us', '')
+                            const escalationMsg = `❓ *Pregunta pendiente*\n_De: ${name}_\n\n"${combinedMessage}"\n\n_Respóndeme aquí para contestarle._`
+                            addBotMessage(escalationMsg)
+                            await withTimeout(whatbotGroup.sendMessage(escalationMsg), 8000, 'sendEscalation')
+                            addPendingQuestion(user, combinedMessage)
+                            console.log('[ESCALATION] Pregunta enviada al grupo Whatbot')
+                        } else {
+                            console.warn('[ESCALATION] Grupo Whatbot no encontrado')
+                        }
+                    } catch (err) {
+                        console.error('[ESCALATION] Error al enviar al grupo Whatbot', err)
+                    }
+                }
+                return
+            }
+
+            console.log('[PIPELINE] Generando respuesta')
+            const reply = await withTimeout(generateReply(combinedMessage, context, persona), 15000, 'generateReply')
+
+            if (!reply) {
+                console.warn('[PIPELINE] No se genero respuesta')
+                return
+            }
+
+            // esto es para contestar en modo "responder" al mensaje solo un 30% de las veces, para que no siempre se vea como un bot
+            if (Math.random() < 0.3) {
+                await withTimeout(message.reply(reply), 8000, 'replyWithQuote')
+            } else {
+                await withTimeout(client.sendMessage(user, reply), 8000, 'sendMessage')
+            }
 
             await saveMessage(user, 'user', combinedMessage)
-            await saveMessage(user, 'assistant', learned)
-
-            return
+            await saveMessage(user, 'assistant', reply)
+            console.log('[PIPELINE] Flujo completado')
+        } catch (err) {
+            console.error('[PIPELINE] Error no controlado en callback del buffer', err)
         }
-
-        const decision = await decideReply(combinedMessage, context)
-
-        if (!decision.shouldReply || decision.confidence < 0.7) {
-            return
-        }
-
-        const reply = await generateReply(combinedMessage, context)
-
-        if (!reply) return
-
-        await message.reply(reply)
-
-        await saveMessage(user, 'user', combinedMessage)
-        await saveMessage(user, 'assistant', reply)
     })
 }
 

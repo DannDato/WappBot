@@ -5,15 +5,29 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-async function getRecentMessages() {
+const REPORT_TIMEZONE = 'America/Mexico_City'
+
+async function getDailyMessages(referenceDate = new Date()) {
   const [rows] = await db.query(`
     SELECT user_id, role, content, created_at
     FROM messages
-    WHERE created_at >= NOW() - INTERVAL 4 HOUR
+    WHERE created_at >= NOW() - INTERVAL 36 HOUR
     ORDER BY user_id, created_at ASC
   `)
 
-  return rows
+  const targetDay = toMexicoDayKey(referenceDate)
+  return rows.filter(row => toMexicoDayKey(row.created_at) === targetDay)
+}
+
+function toMexicoDayKey(date) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+
+  return formatter.format(new Date(date))
 }
 
 function groupByUser(messages) {
@@ -30,20 +44,27 @@ function groupByUser(messages) {
   return grouped
 }
 
-async function generateSummary(messages) {
+function formatConversationBlock(userId, userMessages, contactLabels = {}) {
+  const label = contactLabels[userId] || userId
+  let text = `\nContacto: ${label}\n`
+
+  userMessages.forEach(msg => {
+    text += `${msg.role === 'user' ? 'Usuario' : 'Bot'}: ${msg.content}\n`
+  })
+
+  return text
+}
+
+async function generateSummary(messages, contactLabels = {}) {
   const grouped = groupByUser(messages)
 
   let text = ''
 
   for (const user in grouped) {
-    text += `\nUsuario: ${user}\n`
-
-    grouped[user].forEach(msg => {
-      text += `${msg.role === 'user' ? '👤' : '🤖'}: ${msg.content}\n`
-    })
+    text += formatConversationBlock(user, grouped[user], contactLabels)
   }
 
-  if (!text) return 'Sin actividad en las últimas 4 horas.'
+  if (!text) return 'Sin actividad relevante hoy.'
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4.1-mini',
@@ -51,15 +72,37 @@ async function generateSummary(messages) {
       {
         role: 'system',
         content: `
-Resume conversaciones de WhatsApp.
+Eres un analista ejecutivo de conversaciones de WhatsApp.
 
-Hazlo en formato:
-- Usuario
-- Qué quería
-- Cómo respondió el bot
-- Si la respuesta fue adecuada o no
+Tu tarea es resumir UNICAMENTE lo importante del dia para que Daniel vea rapido:
+- compromisos
+- pendientes
+- cosas que quedaron para manana
+- personas a las que conviene dar seguimiento
+- riesgos o respuestas dudosas del bot
 
-Sé breve pero claro.
+Reglas de salida:
+- Escribe en espanol.
+- Se directo, practico y breve.
+- No repitas conversaciones irrelevantes.
+- Prioriza hechos accionables.
+- Si hay algo comprometido para manana, dilo explicitamente.
+- Si una conversacion no dejo pendiente claro, no inventes.
+
+Usa EXACTAMENTE este formato:
+
+📌 Pendientes clave
+- ...
+
+👥 Conversaciones importantes
+- Nombre/contacto: ...
+  Quedo en: ...
+  Siguiente paso: ...
+
+⚠️ Ojo
+- ...
+
+Si una seccion no tiene contenido, escribe "- Sin novedades".
 `
       },
       {
@@ -75,6 +118,6 @@ Sé breve pero claro.
 }
 
 module.exports = {
-  getRecentMessages,
+  getDailyMessages,
   generateSummary
 }
