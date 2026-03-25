@@ -37,6 +37,7 @@ function getHelpText() {
     '/stop - Pone el bot en modo silencioso',
     '/status - Muestra el estado actual del bot',
     '/report - Genera y envia el reporte diario al grupo',
+    '/metrics [minutos] - Muestra resumen de metricas recientes',
     '/resume - Devuelve al bot el control de la conversacion mas reciente',
     '/resume <nombre> - Devuelve el control al bot para un contacto especifico',
     '/resume 1|2 - Elige una opcion cuando haya ambiguedad',
@@ -105,6 +106,26 @@ async function handleCommand(client, message) {
         await message.reply('⚠️ No pude generar el reporte en este momento')
       }
       return true
+
+    case '/wbmetrics':
+    case '/metrics': {
+      const requestedMinutes = Number(argsText || 60)
+      const windowMinutes = Number.isFinite(requestedMinutes) && requestedMinutes > 0
+        ? Math.min(requestedMinutes, 24 * 60)
+        : 60
+
+      logger.info('[COMMAND] Generando resumen de metricas', { chatId: message.from, windowMinutes })
+      try {
+        const summary = logger.formatMetricsSummary({ windowMinutes })
+        await message.reply(summary)
+        logger.categoryMetric('command', 'success', { command, windowMinutes }, logCtx)
+      } catch (error) {
+        logger.error('[COMMAND] Error al generar resumen de metricas', error, logCtx)
+        logger.categoryMetric('command', 'error', { command, windowMinutes }, logCtx)
+        await message.reply('⚠️ No pude generar el resumen de métricas en este momento')
+      }
+      return true
+    }
 
     case '/wbhelp':
     case '/help':
