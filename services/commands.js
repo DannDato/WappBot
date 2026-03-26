@@ -2,6 +2,7 @@ const { startBot, stopBot, isBotActive } = require('./botState')
 const { sendDailyReport } = require('./scheduler')
 const { releaseLatestHumanControl, releaseHuman } = require('./conversationState')
 const { resolveRecentContactByName } = require('./contactResolver')
+const { getDailyTokenUsageByDate, getDailyTokenUsageBreakdown, normalizeUsageDateInput } = require('./tokenUsage')
 const logger = require('./logger')
 
 const PENDING_RESUME_TTL_MS = 5 * 60 * 1000
@@ -38,6 +39,7 @@ function getHelpText() {
     '/status - Muestra el estado actual del bot',
     '/report - Genera y envia el reporte diario al grupo',
     '/metrics [minutos] - Muestra resumen de metricas recientes',
+    '/tokens <YYYY-MM-DD> - Muestra tokens usados en la fecha indicada',
     '/resume - Devuelve al bot el control de la conversacion mas reciente',
     '/resume <nombre> - Devuelve el control al bot para un contacto especifico',
     '/resume 1|2 - Elige una opcion cuando haya ambiguedad',
@@ -123,6 +125,52 @@ async function handleCommand(client, message) {
         logger.error('[COMMAND] Error al generar resumen de metricas', error, logCtx)
         logger.categoryMetric('command', 'error', { command, windowMinutes }, logCtx)
         await message.reply('⚠️ No pude generar el resumen de métricas en este momento')
+      }
+      return true
+    }
+
+    case '/wbtokens':
+    case '/tokens': {
+      const usageDate = normalizeUsageDateInput(argsText)
+      if (!usageDate) {
+        logger.warn('[COMMAND] Fecha invalida para consulta de tokens', { chatId: message.from })
+        logger.categoryMetric('command', 'tokens_invalid_date', { command }, logCtx)
+        await message.reply('⚠️ Usa el formato /tokens YYYY-MM-DD, por ejemplo /tokens 2026-03-25')
+        return true
+      }
+
+      logger.info('[COMMAND] Consultando tokens por fecha', { chatId: message.from, usageDate })
+      try {
+        const [summary, breakdown] = await Promise.all([
+          getDailyTokenUsageByDate(usageDate),
+          getDailyTokenUsageBreakdown(usageDate)
+        ])
+
+        const breakdownLines = breakdown.length > 0
+          ? breakdown.slice(0, 10).map(item => (
+              `- ${item.source} / ${item.model}: total ${item.totalTokens}, input ${item.promptTokens}, output ${item.completionTokens}, req ${item.requestCount}`
+            )).join('\n')
+          : '- Sin registros para esa fecha'
+
+        const extraLine = breakdown.length > 10
+          ? `\n- ... y ${breakdown.length - 10} combinaciones mas`
+          : ''
+
+        await message.reply([
+          `🧮 *Tokens ${summary.usageDate}*`,
+          `- Total: ${summary.totalTokens}`,
+          `- Input: ${summary.promptTokens}`,
+          `- Output: ${summary.completionTokens}`,
+          '',
+          '*Desglose por source/model*',
+          `${breakdownLines}${extraLine}`
+        ].join('\n'))
+
+        logger.categoryMetric('command', 'success', { command, usageDate }, logCtx)
+      } catch (error) {
+        logger.error('[COMMAND] Error al consultar tokens por fecha', error, logCtx)
+        logger.categoryMetric('command', 'error', { command, usageDate }, logCtx)
+        await message.reply('⚠️ No pude consultar los tokens de esa fecha en este momento')
       }
       return true
     }

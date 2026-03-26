@@ -63,6 +63,33 @@ const BLOCKED_META_KEYS = new Set([
 
 const ALLOWED_CONTEXT_KEYS = new Set(['scope'])
 
+const STRICT_BLOCKED_MESSAGE_META_KEYS = new Set([
+  'userid',
+  'conversationid',
+  'correlationid',
+  'chatid',
+  'messageid',
+  'targetuserid',
+  'contactname',
+  'contactlabel',
+  'content',
+  'message',
+  'messages',
+  'reply',
+  'response',
+  'prompt',
+  'raw',
+  'topic',
+  'name',
+  'label',
+  'phone',
+  'email',
+  'embedding',
+  'stack',
+  'errormessage',
+  'body'
+])
+
 function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true })
@@ -141,6 +168,97 @@ function sanitizeObject(value) {
   return sanitized
 }
 
+function sanitizeStrictMessageMeta(value) {
+  if (!value || typeof value !== 'object') return {}
+
+  const sanitized = {}
+  for (const [key, rawValue] of Object.entries(value)) {
+    const normalizedKey = String(key).toLowerCase()
+    if (STRICT_BLOCKED_MESSAGE_META_KEYS.has(normalizedKey)) continue
+
+    if (rawValue == null) continue
+    if (typeof rawValue === 'number' || typeof rawValue === 'boolean') {
+      sanitized[key] = rawValue
+      continue
+    }
+
+    if (Array.isArray(rawValue)) {
+      sanitized[key] = `[array:${rawValue.length}]`
+      continue
+    }
+
+    if (typeof rawValue === 'object') {
+      sanitized[key] = '[object]'
+      continue
+    }
+
+    sanitized[key] = '[redacted]'
+  }
+
+  return sanitized
+}
+
+function serializeError(err) {
+  if (!err) return {}
+
+  if (err instanceof Error) {
+    const serialized = {
+      errorType: err.name || 'Error'
+    }
+
+    if (err.message) serialized.errorMessage = err.message
+    if (err.stack) serialized.stack = err.stack
+    if (typeof err.code !== 'undefined') serialized.code = err.code
+    if (typeof err.status !== 'undefined') serialized.status = err.status
+    if (typeof err.statusCode !== 'undefined') serialized.statusCode = err.statusCode
+    if (typeof err.type !== 'undefined') serialized.type = err.type
+    if (typeof err.param !== 'undefined') serialized.param = err.param
+
+    if (err.headers && typeof err.headers === 'object') {
+      const rateLimitHeaders = {}
+      const allowedHeaders = [
+        'x-request-id',
+        'x-ratelimit-limit-requests',
+        'x-ratelimit-limit-tokens',
+        'x-ratelimit-remaining-requests',
+        'x-ratelimit-remaining-tokens',
+        'x-ratelimit-reset-requests',
+        'x-ratelimit-reset-tokens',
+        'retry-after'
+      ]
+
+      for (const headerName of allowedHeaders) {
+        const headerValue = err.headers[headerName]
+        if (typeof headerValue !== 'undefined') {
+          rateLimitHeaders[headerName] = headerValue
+        }
+      }
+
+      if (Object.keys(rateLimitHeaders).length > 0) {
+        serialized.headers = rateLimitHeaders
+      }
+    }
+
+    if (err.error && typeof err.error === 'object') {
+      if (err.error.message) serialized.apiErrorMessage = err.error.message
+      if (err.error.type) serialized.apiErrorType = err.error.type
+      if (err.error.code) serialized.apiErrorCode = err.error.code
+      if (err.error.param) serialized.apiErrorParam = err.error.param
+    }
+
+    return serialized
+  }
+
+  if (typeof err === 'object') {
+    return sanitizeObject(err)
+  }
+
+  return {
+    errorType: typeof err,
+    errorMessage: String(err)
+  }
+}
+
 function sanitizeContext(context = {}) {
   const sanitized = {}
   for (const [key, value] of Object.entries(context || {})) {
@@ -181,6 +299,35 @@ function emit(level, message, meta = {}, context = {}) {
   console.log(line, Object.keys(safeMeta).length ? safeMeta : '')
 }
 
+function emitStrictMessage(level, message, meta = {}, context = {}) {
+  const ts = nowIso()
+  const safeMeta = sanitizeStrictMessageMeta(meta)
+  const safeContext = sanitizeContext(context)
+  const category = parseCategoryFromMessage(message)
+
+  const payload = {
+    ts,
+    level,
+    category,
+    message: safeString(message),
+    meta: safeMeta,
+    context: safeContext
+  }
+
+  appendJsonLine(LOG_FILE, payload)
+
+  const line = `${COLORS.gray}${ts}${COLORS.reset} ${colorizeBracketTag(String(message), level)}`
+  if (level === 'error') {
+    console.error(line, Object.keys(safeMeta).length ? safeMeta : '')
+    return
+  }
+  if (level === 'warn') {
+    console.warn(line, Object.keys(safeMeta).length ? safeMeta : '')
+    return
+  }
+  console.log(line, Object.keys(safeMeta).length ? safeMeta : '')
+}
+
 function info(message, meta = {}, context = {}) {
   emit('info', message, meta, context)
 }
@@ -190,12 +337,12 @@ function warn(message, meta = {}, context = {}) {
 }
 
 function error(message, err = null, context = {}) {
-  const errorMeta = err
-    ? {
-        errorType: err.name || 'Error'
-      }
-    : {}
+  const errorMeta = serializeError(err)
   emit('error', message, errorMeta, context)
+}
+
+function infoIncomingMessage(message, meta = {}, context = {}) {
+  emitStrictMessage('info', message, meta, context)
 }
 
 function metric(name, value, tags = {}, context = {}) {
@@ -444,6 +591,7 @@ async function formatMetricsSummary(options = {}) {
 
 module.exports = {
   info,
+  infoIncomingMessage,
   warn,
   error,
   metric,

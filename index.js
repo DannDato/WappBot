@@ -213,7 +213,7 @@ client.on('message', async (message) => {
 
     const logCtx = { userId: message.from, conversationId: message.from }
 
-    logger.info('[EVENT] message recibido', { messageId: message.id?._serialized || null }, logCtx)
+    logger.infoIncomingMessage('[EVENT] message recibido', { messageId: message.id?._serialized || null }, logCtx)
     logger.categoryMetric('event', 'message_received', {}, logCtx)
     const chat = await message.getChat()
     const isContact = chat.isGroup ? null : await chat.getContact()
@@ -266,7 +266,7 @@ client.on('message_create', async (message) => {
     // Permitir mensajes del grupo Whatbot aunque no sea un contacto individual
     if (!isContact && !isCommandGroup) return
 
-    logger.info('[MESSAGE] Nuevo mensaje creado', { messageId: message.id?._serialized || null }, logCtx)
+    logger.infoIncomingMessage('[MESSAGE] Nuevo mensaje creado', { messageId: message.id?._serialized || null }, logCtx)
     logger.categoryMetric('message', 'created', {}, logCtx)
 
     // IGNORAR mensajes del bot

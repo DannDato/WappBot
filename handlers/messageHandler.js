@@ -24,7 +24,7 @@ async function handleMessage(client, message) {
 
     const user = message.from
     const logCtx = logger.createContext({ userId: user, conversationId: user })
-    logger.info('[MESSAGE] Nuevo mensaje recibido', { messageId: message.id?._serialized || null }, logCtx)
+    logger.infoIncomingMessage('[MESSAGE] Nuevo mensaje recibido', { messageId: message.id?._serialized || null }, logCtx)
     logger.categoryMetric('message', 'received', {}, logCtx)
     const content = message.body.trim()
     const flowStartedAt = Date.now()
